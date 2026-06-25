@@ -263,3 +263,30 @@ def test_xslf345_primary_document_is_not_assumed_parseable(monkeypatch, tmp_path
 
         assert process_sec_filings(session, limit=10, form_type="4") == 1
         assert session.query(FilingEvent).one().needs_human_review is True
+
+
+def test_8k_parser_ignores_body_item_reference_and_deduplicates():
+    rows = parse_8k_items(
+        "Item 5.02 Departure of Directors or Certain Officers; Election of Directors; "
+        "Appointment of Certain Officers; Compensatory Arrangements of Certain Officers. "
+        "The CFO resigned. Under Item 5.02(c)(3), related compensation details are "
+        "described below."
+    )
+    assert [row["sec_item"] for row in rows] == ["Item 5.02"]
+
+
+def test_8k_item_507_ethics_ai_data_acquisition_proposal_stays_low():
+    rows = parse_8k_items(
+        "Item 5.07 Submission of Matters to a Vote of Security Holders. "
+        "Shareholders voted on a proposal titled Report on Ethical AI Data Acquisition "
+        "and Usage."
+    )
+    assert rows[0]["importance"] == "low"
+
+
+def test_8k_item_507_merger_vote_is_medium():
+    rows = parse_8k_items(
+        "Item 5.07 Submission of Matters to a Vote of Security Holders. "
+        "Shareholders approved the merger agreement and related business combination."
+    )
+    assert rows[0]["importance"] in {"medium", "high"}

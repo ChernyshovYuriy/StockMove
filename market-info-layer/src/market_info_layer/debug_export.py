@@ -13,8 +13,7 @@ from typing import Any
 
 from market_info_layer.settings import ROOT_DIR, get_settings
 
-RAW_COLUMN_HINTS = ("raw", "xml", "text", "content", "document")
-RAW_COLUMN_NAMES = {"raw_text", "raw_xml", "document_text", "content", "document_content"}
+RAW_COLUMN_NAMES = {"raw_text", "raw_xml", "raw_html", "document_text", "content"}
 EXCLUDED_DIRS = {".env", ".venv", ".git"}
 
 
@@ -131,8 +130,7 @@ def _row_count(conn: sqlite3.Connection, table: str) -> int:
 
 
 def _is_raw_column(name: str) -> bool:
-    lower = name.lower()
-    return lower in RAW_COLUMN_NAMES or any(hint in lower for hint in RAW_COLUMN_HINTS)
+    return name.lower() in RAW_COLUMN_NAMES
 
 
 def _sanitize_row(row: sqlite3.Row, columns: list[str], include_raw: bool) -> dict[str, Any]:
@@ -303,6 +301,14 @@ def _health_checks(
             for r in conn.execute(
                 "SELECT filing_id, COUNT(*) AS count FROM filing_documents "
                 "GROUP BY filing_id HAVING COUNT(*) > 1"
+            )
+        ]
+    if _has(tables, columns, "filing_events", "filing_id", "sec_item", "event_type"):
+        checks["duplicates"]["filing_events_by_filing_item_type"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT filing_id, sec_item, event_type, COUNT(*) AS count FROM filing_events "
+                "GROUP BY filing_id, sec_item, event_type HAVING COUNT(*) > 1"
             )
         ]
     for key, table, col in [

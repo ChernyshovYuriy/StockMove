@@ -33,6 +33,10 @@ def generate_daily_brief(
     events = session.scalars(
         select(FilingEvent).where(FilingEvent.event_date == brief_date.isoformat())
     ).all()
+    importance_rank = {"high": 0, "medium": 1, "low": 2, "unknown": 3, None: 4}
+    sorted_events = sorted(events, key=lambda e: (importance_rank.get(e.importance, 4), e.ticker))
+    material_events = [e for e in sorted_events if e.importance in {"high", "medium"}]
+    low_events = [e for e in sorted_events if e.importance == "low"]
     insiders = session.scalars(
         select(InsiderTransaction).where(InsiderTransaction.importance.in_(["high", "medium"]))
     ).all()
@@ -52,9 +56,19 @@ def generate_daily_brief(
         "",
         "## Parsed filing events",
         *(
-            f"- {e.ticker} {e.sec_item or e.form_type}: {e.headline} ({e.source_url})"
-            for e in events
+            f"- [{e.importance}] {e.ticker} {e.sec_item or e.form_type}: "
+            f"{e.headline}. {e.summary or ''} Source: {e.source_url}"
+            for e in material_events
         ),
+        *( ["- No high or medium parsed filing events."] if not material_events else [] ),
+        "",
+        "## Low-importance parsed filing events",
+        *(
+            f"- [low] {e.ticker} {e.sec_item or e.form_type}: "
+            f"{e.headline}. Source: {e.source_url}"
+            for e in low_events
+        ),
+        *( ["- No low-importance parsed filing events."] if not low_events else [] ),
         "",
         "## Insider transactions",
         *(
@@ -63,10 +77,16 @@ def generate_daily_brief(
             for i in insiders
         ),
         "",
-        "## Unprocessed filings requiring review",
+        "## Needs human review",
         *(
-            f"- {f.ticker} {f.form_type} filed {f.filing_date}: {f.filing_url}"
+            f"- Unprocessed material filing: {f.ticker} {f.form_type} "
+            f"filed {f.filing_date}. Source: {f.filing_url}"
             for f in review_filings
+        ),
+        *(
+            ["- No unprocessed material filings found for this date."]
+            if not review_filings
+            else []
         ),
         "",
         "## New SEC filings for watchlist tickers",
