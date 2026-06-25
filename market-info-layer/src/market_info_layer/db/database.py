@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from market_info_layer.settings import get_settings
@@ -19,7 +19,30 @@ def get_engine(database_url: str | None = None):
 def init_db(database_url: str | None = None) -> None:
     from market_info_layer.db.models import Base
 
-    Base.metadata.create_all(get_engine(database_url))
+    engine = get_engine(database_url)
+    Base.metadata.create_all(engine)
+    _ensure_trading_halt_columns(engine)
+
+
+def _ensure_trading_halt_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "trading_halts" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("trading_halts")}
+    required = {
+        "halt_date": "TEXT",
+        "halt_datetime": "TEXT",
+        "resume_datetime": "TEXT",
+        "timezone": "TEXT",
+    }
+    missing = [
+        (name, column_type) for name, column_type in required.items() if name not in existing
+    ]
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name, column_type in missing:
+            conn.execute(text(f"ALTER TABLE trading_halts ADD COLUMN {name} {column_type}"))
 
 
 def get_session(database_url: str | None = None) -> Generator[Session, None, None]:

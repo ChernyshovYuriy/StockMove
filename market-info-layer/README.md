@@ -78,6 +78,9 @@ Use `--date YYYY-MM-DD` to choose the report date and `--output-name TEXT` to wr
 
 ## Nasdaq trade halt troubleshooting
 
+Nasdaq halt times are treated as Eastern Time (`America/New_York`). If an RSS item does not provide an explicit halt date, the collector uses the RSS item publication date as the halt date; if that is unavailable, it falls back to the collection date so historical halt records still receive a date-bearing `halt_datetime`.
+
+
 `collect-halts` reads Nasdaq's application RSS endpoint:
 
 ```bash

@@ -125,14 +125,18 @@ class TradingHalt(Base):
     __tablename__ = "trading_halts"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ticker: Mapped[str] = mapped_column(String)
+    halt_date: Mapped[str | None] = mapped_column(String)
     halt_time: Mapped[str | None] = mapped_column(String)
+    halt_datetime: Mapped[str | None] = mapped_column(String)
     resume_time: Mapped[str | None] = mapped_column(String)
+    resume_datetime: Mapped[str | None] = mapped_column(String)
+    timezone: Mapped[str | None] = mapped_column(String)
     reason_code: Mapped[str | None] = mapped_column(String)
     reason_text: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String)
     collected_at: Mapped[str] = mapped_column(String)
     __table_args__ = (
-        UniqueConstraint("ticker", "halt_time", "reason_code", name="uq_trading_halt"),
+        UniqueConstraint("ticker", "halt_datetime", "reason_code", name="uq_trading_halt"),
     )
 
 

@@ -287,7 +287,13 @@ def _scalar(conn: sqlite3.Connection, sql: str) -> Any:
 def _health_checks(
     conn: sqlite3.Connection, tables: list[str], columns: dict[str, list[dict[str, Any]]]
 ) -> dict[str, Any]:
-    checks: dict[str, Any] = {"counts": {}, "orphans": {}, "duplicates": {}, "latest_dates": {}}
+    checks: dict[str, Any] = {
+        "counts": {},
+        "orphans": {},
+        "duplicates": {},
+        "latest_dates": {},
+        "missing": {},
+    }
     for table, col in [
         ("filings", "ticker"),
         ("filings", "form_type"),
@@ -353,6 +359,34 @@ def _health_checks(
                 "FROM macro_observations GROUP BY series_id ORDER BY series_id"
             )
         ]
+    if _has(tables, columns, "trading_halts", "halt_date"):
+        checks["counts"]["trading_halts_by_halt_date"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT halt_date, COUNT(*) AS count FROM trading_halts "
+                "GROUP BY halt_date ORDER BY halt_date DESC"
+            )
+        ]
+    if _has(tables, columns, "trading_halts", "ticker"):
+        checks["counts"]["trading_halts_by_ticker"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT ticker, COUNT(*) AS count FROM trading_halts "
+                "GROUP BY ticker ORDER BY count DESC, ticker"
+            )
+        ]
+    if _has(tables, columns, "trading_halts", "halt_datetime"):
+        checks["latest_dates"]["latest_halt_datetime"] = _scalar(
+            conn, "SELECT MAX(halt_datetime) FROM trading_halts"
+        )
+        checks["missing"]["trading_halts_missing_halt_datetime"] = _scalar(
+            conn, "SELECT COUNT(*) FROM trading_halts "
+            "WHERE halt_datetime IS NULL OR halt_datetime = ''"
+        )
+    if _has(tables, columns, "trading_halts", "reason_text"):
+        checks["missing"]["trading_halts_missing_reason_text"] = _scalar(
+            conn, "SELECT COUNT(*) FROM trading_halts WHERE reason_text IS NULL OR reason_text = ''"
+        )
     if _has(tables, columns, "trading_halts", "halt_time"):
         checks["latest_dates"]["latest_halt_time"] = _scalar(
             conn, "SELECT MAX(halt_time) FROM trading_halts"
