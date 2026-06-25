@@ -292,6 +292,39 @@ def test_8k_item_507_merger_vote_is_medium():
     assert rows[0]["importance"] in {"medium", "high"}
 
 
+def test_8k_item_502_required_importance_examples():
+    rows = parse_8k_items(
+        "Item 5.02 Departure of Directors or Certain Officers. Tim Cook will transition "
+        "from the role of Chief Executive Officer effective immediately."
+    )
+    assert rows[0]["importance"] == "high"
+
+    rows = parse_8k_items(
+        "Item 5.02 Departure of Directors or Certain Officers. The CFO resigned "
+        "effective immediately."
+    )
+    assert rows[0]["importance"] == "high"
+
+    rows = parse_8k_items(
+        "Item 5.02 Compensatory Arrangements of Certain Officers. The company adopted "
+        "an employee stock plan for eligible employees."
+    )
+    assert rows[0]["importance"] != "high"
+    assert rows[0]["importance"] in {"low", "medium"}
+
+    rows = parse_8k_items(
+        "Item 5.02 Election of Directors. Jane Doe was appointed to the board as an "
+        "ordinary director appointment only."
+    )
+    assert rows[0]["importance"] != "high"
+
+    rows = parse_8k_items(
+        "Item 5.02 Compensatory Arrangements of Certain Officers. The company updated "
+        "its cash incentive plan and compensation plan."
+    )
+    assert rows[0]["importance"] in {"low", "medium"}
+
+
 def test_inline_xbrl_html_extraction_keeps_visible_8k_text_and_drops_noise():
     html = """
     <html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL">
@@ -302,11 +335,14 @@ def test_inline_xbrl_html_extraction_keeps_visible_8k_text_and_drops_noise():
       <body>
         <ix:header>
           <ix:hidden>
+            true true true
             <ix:nonNumeric name="dei:EntityTradingSymbol">ABC</ix:nonNumeric>
             <ix:nonNumeric name="dei:DocumentPeriodEndDate">true</ix:nonNumeric>
+            us-gaap:CommonStockMember
             us-gaap:LongTermDebtMember
+            aapl:A1.625NotesDue2026Member
             http://fasb.org/us-gaap/2026
-            NASDAQ
+            NASDAQ NASDAQ NASDAQ
           </ix:hidden>
         </ix:header>
         <div style="display:none">false dei:AmendmentFlag NYSE</div>
@@ -322,12 +358,16 @@ def test_inline_xbrl_html_extraction_keeps_visible_8k_text_and_drops_noise():
 
     assert "Item 2.02" in text
     assert "reported revenue growth and margin expansion" in text
+    assert not text.startswith("true true")
     assert "Exhibit 99.1" in text
     assert "SIGNATURES" in text
     assert "technicalNoise" not in text
     assert "EntityTradingSymbol" not in text
+    assert "us-gaap:CommonStockMember" not in text
     assert "LongTermDebtMember" not in text
+    assert "A1.625NotesDue2026Member" not in text
     assert "DocumentPeriodEndDate" not in text
+    assert "NASDAQ NASDAQ NASDAQ" not in text
     assert "NASDAQ" not in text
     assert "NYSE" not in text
     assert "true" not in text.lower()
