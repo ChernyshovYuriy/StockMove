@@ -1,6 +1,7 @@
 import pytest
 
 from market_info_layer.collectors.nasdaq_halts import (
+    HaltFetchError,
     HaltParseError,
     parse_halts_html,
     parse_halts_rss,
@@ -20,7 +21,10 @@ RSS_EMPTY = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 class _Response:
-    text = RSS_ONE
+    def __init__(self, text=RSS_ONE, status_code=200, content_type="application/rss+xml"):
+        self.text = text
+        self.status_code = status_code
+        self.headers = {"content-type": content_type}
 
     def raise_for_status(self):
         return None
@@ -66,9 +70,30 @@ def test_parse_halts_rss_empty_feed_returns_zero_rows():
     assert parse_halts_rss(RSS_EMPTY) == []
 
 
-def test_parse_halts_rss_malformed_feed_raises_clear_error():
+def test_parse_halts_rss_malformed_feed_with_entries_continues(caplog):
+    malformed = """<rss><channel><item><title>Trade Halt - XYZ</title>
+    <description>Issue Symbol: XYZ | Halt Time: 2024-01-01 11:00:00 | Reason Code: T2</description>
+    </item></channel></rssgarbage>"""
+
+    rows = parse_halts_rss(malformed)
+
+    assert rows[0]["ticker"] == "XYZ"
+    assert rows[0]["reason_code"] == "T2"
+    assert "malformed but contains" in caplog.text
+
+
+def test_parse_halts_rss_malformed_feed_without_entries_raises_clear_error():
     with pytest.raises(HaltParseError, match="Malformed Nasdaq trade halt RSS feed"):
-        parse_halts_rss("<rss><channel><item></channel></rss>")
+        parse_halts_rss("<rss><channel></rss>")
+
+
+def test_parse_halts_rss_skips_unparseable_entry(caplog):
+    rss = """<rss><channel><item>
+    <title>Nasdaq Halt Notice</title><description>Reason Code: T1</description>
+    </item></channel></rss>"""
+
+    assert parse_halts_rss(rss) == []
+    assert "without parseable ticker" in caplog.text
 
 
 def test_collect_halts_prevents_duplicates(tmp_path, monkeypatch):
@@ -79,7 +104,7 @@ def test_collect_halts_prevents_duplicates(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         "market_info_layer.collectors.nasdaq_halts.requests.get",
-        lambda url, timeout: _Response(),
+        lambda url, headers, timeout: _Response(),
     )
     monkeypatch.setattr("market_info_layer.collectors.nasdaq_halts._can_fetch_now", lambda: True)
     db_url = f"sqlite:///{tmp_path / 'halts.db'}"
@@ -95,18 +120,80 @@ def test_collect_halts_empty_rss_succeeds_with_zero_rows(tmp_path, monkeypatch):
     from market_info_layer.collectors.nasdaq_halts import collect_halts
     from market_info_layer.db.database import get_engine, init_db
 
-    class EmptyResponse:
-        text = RSS_EMPTY
-
-        def raise_for_status(self):
-            return None
-
     monkeypatch.setattr(
         "market_info_layer.collectors.nasdaq_halts.requests.get",
-        lambda url, timeout: EmptyResponse(),
+        lambda url, headers, timeout: _Response(RSS_EMPTY),
     )
     monkeypatch.setattr("market_info_layer.collectors.nasdaq_halts._can_fetch_now", lambda: True)
     db_url = f"sqlite:///{tmp_path / 'empty_halts.db'}"
     init_db(db_url)
     with Session(get_engine(db_url)) as session:
         assert collect_halts(session) == 0
+
+
+def test_collect_halts_uses_rss_headers(tmp_path, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    from market_info_layer.collectors.nasdaq_halts import collect_halts
+    from market_info_layer.db.database import get_engine, init_db
+
+    captured = {}
+
+    def fake_get(url, headers, timeout):
+        captured.update({"url": url, "headers": headers, "timeout": timeout})
+        return _Response(RSS_EMPTY)
+
+    monkeypatch.setattr("market_info_layer.collectors.nasdaq_halts.requests.get", fake_get)
+    monkeypatch.setattr("market_info_layer.collectors.nasdaq_halts._can_fetch_now", lambda: True)
+    db_url = f"sqlite:///{tmp_path / 'headers_halts.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        assert collect_halts(session) == 0
+
+    assert captured["url"] == "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
+    assert captured["headers"]["User-Agent"]
+    assert captured["headers"]["Accept"] == "application/rss+xml, application/xml, text/xml, */*"
+
+
+def test_collect_halts_html_response_fails_before_parse(tmp_path, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    from market_info_layer.collectors.nasdaq_halts import collect_halts
+    from market_info_layer.db.database import get_engine, init_db
+
+    def fail_parse(text):
+        raise AssertionError("HTML should not be passed to feedparser")
+
+    monkeypatch.setattr("market_info_layer.collectors.nasdaq_halts.parse_halts_rss", fail_parse)
+    monkeypatch.setattr(
+        "market_info_layer.collectors.nasdaq_halts.requests.get",
+        lambda url, headers, timeout: _Response(
+            "<html><body>error</body></html>", content_type="text/html"
+        ),
+    )
+    monkeypatch.setattr("market_info_layer.collectors.nasdaq_halts._can_fetch_now", lambda: True)
+    db_url = f"sqlite:///{tmp_path / 'html_halts.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        with pytest.raises(HaltFetchError, match="non-RSS content"):
+            collect_halts(session)
+
+
+def test_collect_halts_oops_response_fails_clearly(tmp_path, monkeypatch):
+    from sqlalchemy.orm import Session
+
+    from market_info_layer.collectors.nasdaq_halts import collect_halts
+    from market_info_layer.db.database import get_engine, init_db
+
+    monkeypatch.setattr(
+        "market_info_layer.collectors.nasdaq_halts.requests.get",
+        lambda url, headers, timeout: _Response(
+            "Oops! That didn't work", content_type="text/plain"
+        ),
+    )
+    monkeypatch.setattr("market_info_layer.collectors.nasdaq_halts._can_fetch_now", lambda: True)
+    db_url = f"sqlite:///{tmp_path / 'oops_halts.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        with pytest.raises(HaltFetchError, match="non-RSS content"):
+            collect_halts(session)
