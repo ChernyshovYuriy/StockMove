@@ -5,12 +5,12 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from market_info_layer.collectors.fred_macro import latest_macro_values
 from market_info_layer.db.models import (
     Filing,
     FilingDocument,
     FilingEvent,
     InsiderTransaction,
-    MacroObservation,
     TradingHalt,
     Watchlist,
 )
@@ -77,6 +77,16 @@ def _format_event(event: FilingEvent, style: ReportStyle) -> str:
     return _format_event_compact(event)
 
 
+def _format_macro_latest(row: dict) -> str:
+    name = f" ({row['name']})" if row.get("name") else ""
+    observation_date = row.get("observation_date") or "No observation recorded"
+    collected_at = row.get("collected_at") or "n/a"
+    return (
+        f"- {row['series_id']}{name}: "
+        f"{observation_date} value={row.get('value')} collected_at={collected_at}"
+    )
+
+
 def _is_item_901(event: FilingEvent) -> bool:
     return (event.sec_item or "").strip().lower() == "item 9.01"
 
@@ -136,9 +146,7 @@ def generate_daily_brief(
         select(Filing).where(Filing.filing_date == brief_date.isoformat())
     ).all()
     halts = [h for h in session.scalars(select(TradingHalt)).all() if h.ticker in tickers]
-    macros = session.scalars(
-        select(MacroObservation).order_by(MacroObservation.observation_date.desc()).limit(10)
-    ).all()
+    macros = latest_macro_values(session)
     selected_events = _select_events(session, brief_date, lookback_days, processed_today)
     sorted_events = sorted(selected_events, key=_event_sort_key)
     visible_events = [
@@ -174,8 +182,8 @@ def generate_daily_brief(
         f"Parsed filing event selection: {selection_text}",
         "",
         "## Known facts",
-        "Macro context:",
-        *(f"- {m.series_id} {m.observation_date}: {m.value} (source: {m.source})" for m in macros),
+        "## Macro Context",
+        *(_format_macro_latest(m) for m in macros),
         "Interpretation: Not generated in version 1.",
         "Speculation: None.",
         "",
@@ -243,13 +251,14 @@ def generate_daily_brief(
         *(f"- {f.ticker} {f.form_type} filed {f.filing_date}: {f.filing_url}" for f in filings),
         "Human review needed: Review material filings manually.",
         "",
-        "## Trading halts affecting watchlist tickers",
+        "## Trading Halts",
         "Known facts:",
         *(
             f"- {h.ticker} halt={h.halt_time} resume={h.resume_time} "
             f"reason={h.reason_code} {h.reason_text}"
             for h in halts
         ),
+        *(["No trading halts recorded for watchlist tickers."] if not halts else []),
         "",
         "## Watchlist implications",
         "Known facts:",

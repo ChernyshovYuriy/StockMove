@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy.orm import Session
 
+from market_info_layer.collectors.fred_macro import latest_macro_values
 from market_info_layer.dashboard.dataframes import dashboard_rows
 from market_info_layer.db.database import get_engine, init_db
 from market_info_layer.db.models import (
@@ -159,9 +160,26 @@ with Session(get_engine()) as session:
                         st.link_button("SEC source", row["source_url"])
                     st.divider()
     elif page == "Macro observations":
-        st.dataframe(dashboard_rows(session, MacroObservation))
+        st.subheader("Latest values by configured series")
+        latest_df = pd.DataFrame(latest_macro_values(session))
+        st.dataframe(latest_df, hide_index=True)
+        st.subheader("Historical observations")
+        rows = dashboard_rows(session, MacroObservation)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(by=["series_id", "observation_date"], ascending=[True, False])
+        st.dataframe(df, hide_index=True)
     elif page == "Trading halts":
-        st.dataframe(dashboard_rows(session, TradingHalt))
+        rows = dashboard_rows(session, TradingHalt)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            ticker = st.text_input("Ticker filter").upper().strip()
+            if ticker:
+                df = df[df["ticker"] == ticker]
+            df = df.sort_values(by=["halt_time", "collected_at"], ascending=[False, False])
+            st.dataframe(df, hide_index=True)
+        else:
+            st.info("No trading halts collected yet.")
     elif page == "Daily brief viewer":
         files = (
             sorted((ROOT_DIR / "reports" / "daily").glob("*.md"))

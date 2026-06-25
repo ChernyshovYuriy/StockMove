@@ -131,6 +131,9 @@ class TradingHalt(Base):
     reason_text: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String)
     collected_at: Mapped[str] = mapped_column(String)
+    __table_args__ = (
+        UniqueConstraint("ticker", "halt_time", "reason_code", name="uq_trading_halt"),
+    )
 
 
 class Price(Base):

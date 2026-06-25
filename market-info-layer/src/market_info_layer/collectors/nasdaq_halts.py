@@ -2,6 +2,8 @@ from html.parser import HTMLParser
 
 import pandas as pd
 import requests
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from market_info_layer.db.models import TradingHalt
@@ -65,6 +67,16 @@ def _tables_from_html(html: str) -> list[pd.DataFrame]:
         raise HaltParseError("No trading halt table found in Nasdaq response") from exc
 
 
+def _cell(row, *names: str) -> str | None:
+    for name in names:
+        value = row.get(name, None)
+        if value is not None:
+            text = str(value).strip()
+            if text and text.lower() != "nan":
+                return text
+    return None
+
+
 def parse_halts_html(html: str) -> list[dict[str, str | None]]:
     tables = _tables_from_html(html)
     if not tables:
@@ -82,10 +94,10 @@ def parse_halts_html(html: str) -> list[dict[str, str | None]]:
             rows.append(
                 {
                     "ticker": ticker,
-                    "halt_time": str(row.get("Halt Time", "")) or None,
-                    "resume_time": str(row.get("Resumption Trade Time", "")) or None,
-                    "reason_code": str(row.get("Reason Code", "")) or None,
-                    "reason_text": str(row.get("Reason", "")) or None,
+                    "halt_time": _cell(row, "Halt Time"),
+                    "resume_time": _cell(row, "Resumption Trade Time", "Resume Time"),
+                    "reason_code": _cell(row, "Reason Code"),
+                    "reason_text": _cell(row, "Reason"),
                     "source": NASDAQ_HALTS_URL,
                     "collected_at": utc_now_iso(),
                 }
@@ -94,11 +106,30 @@ def parse_halts_html(html: str) -> list[dict[str, str | None]]:
     raise HaltParseError("Nasdaq response did not contain expected symbol column")
 
 
+def _halt_exists(session: Session, row: dict[str, str | None]) -> bool:
+    return (
+        session.scalar(
+            select(TradingHalt.id).where(
+                TradingHalt.ticker == row["ticker"],
+                TradingHalt.halt_time == row["halt_time"],
+                TradingHalt.reason_code == row["reason_code"],
+            )
+        )
+        is not None
+    )
+
+
 def collect_halts(session: Session) -> int:
     response = requests.get(NASDAQ_HALTS_URL, timeout=30)
     response.raise_for_status()
-    rows = parse_halts_html(response.text)
-    for row in rows:
+    inserted = 0
+    for row in parse_halts_html(response.text):
+        if _halt_exists(session, row):
+            continue
         session.add(TradingHalt(**row))
-    session.commit()
-    return len(rows)
+        try:
+            session.commit()
+            inserted += 1
+        except IntegrityError:
+            session.rollback()
+    return inserted

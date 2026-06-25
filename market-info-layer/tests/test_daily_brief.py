@@ -168,9 +168,7 @@ def test_debug_report_includes_full_event_fields(tmp_path):
     with Session(get_engine(db_url)) as session:
         session.add(_event(event_date="2024-04-01", summary="debug fields"))
         session.commit()
-        path = generate_daily_brief(
-            session, date(2024, 4, 1), tmp_path / "reports", style="debug"
-        )
+        path = generate_daily_brief(session, date(2024, 4, 1), tmp_path / "reports", style="debug")
 
     text = path.read_text()
     assert "event_date=2024-04-01" in text
@@ -248,3 +246,51 @@ def test_max_unprocessed_limits_unprocessed_filing_list(tmp_path):
     assert "T1 8-K" in unprocessed_section
     assert "T0 8-K" not in unprocessed_section
     assert "1 more unprocessed material filings not shown" in unprocessed_section
+
+
+def test_daily_brief_includes_macro_context_and_trading_halts(tmp_path):
+    from market_info_layer.db.models import MacroObservation, TradingHalt, Watchlist
+
+    db_url = f"sqlite:///{tmp_path / 'brief_context.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        session.add_all(
+            [
+                Watchlist(ticker="AAPL", updated_at="2024-01-01"),
+                MacroObservation(
+                    series_id="CPIAUCSL",
+                    observation_date="2024-01-01",
+                    value=300.1,
+                    realtime_start=None,
+                    realtime_end=None,
+                    source="FRED",
+                    collected_at="2024-01-02T00:00:00+00:00",
+                ),
+                TradingHalt(
+                    ticker="AAPL",
+                    halt_time="2024-01-02 10:00",
+                    resume_time="2024-01-02 10:30",
+                    reason_code="T1",
+                    reason_text="News pending",
+                    source="Nasdaq",
+                    collected_at="2024-01-02T00:00:00+00:00",
+                ),
+            ]
+        )
+        session.commit()
+        path = generate_daily_brief(session, date(2024, 1, 2), tmp_path / "reports")
+
+    text = path.read_text()
+    assert "## Macro Context" in text
+    assert "CPIAUCSL" in text
+    assert "## Trading Halts" in text
+    assert "AAPL halt=2024-01-02 10:00" in text
+
+
+def test_daily_brief_no_watchlist_trading_halts_message(tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'brief_no_halts.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        path = generate_daily_brief(session, date(2024, 1, 2), tmp_path / "reports")
+
+    assert "No trading halts recorded for watchlist tickers." in path.read_text()
