@@ -75,6 +75,19 @@ python -m market_info_layer.cli backfill-review
 
 Use `--date YYYY-MM-DD` to choose the report date and `--output-name TEXT` to write a custom Markdown filename under the daily reports directory. Daily briefs default to `--style compact`, which emits short parsed-event blocks with importance, ticker, event date, SEC item, event type, a summary capped at 240 characters, and the source URL. Use `--style debug` for the verbose field-rich event format. Low-importance parsed filing events are separated by default in compact reports, and Item 9.01 exhibit-only events are hidden unless `--include-low` is passed. Unprocessed material filings are limited to 10 by default; use `--max-unprocessed INTEGER` to adjust the review list length.
 
+
+## Nasdaq trade halt troubleshooting
+
+`collect-halts` reads Nasdaq's application RSS endpoint:
+
+```bash
+curl -i -H 'Accept: application/rss+xml, application/xml, text/xml, */*' \
+  -H 'User-Agent: MarketInfoLayer contact@example.com' \
+  'https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts'
+```
+
+If Nasdaq has no active halt items, the collector should complete successfully and report `Inserted 0 trading halts`; an empty RSS feed is not a failure. If the endpoint returns HTML, an empty error page, or `Oops! That didn't work`, inspect the HTTP status, `Content-Type`, and short response preview before retrying.
+
 ## Configuration
 
 - `config/watchlist.yaml` stores tickers, CIKs, and human-maintained thesis fields.

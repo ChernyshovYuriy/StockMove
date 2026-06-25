@@ -100,7 +100,7 @@ def collect_macro() -> None:
 def collect_halts_command() -> None:
     create_db()
     with session() as s:
-        typer.echo(f"Inserted {collect_halts(s)} halts")
+        typer.echo(f"Inserted {collect_halts(s)} trading halts")
 
 
 @app.command("collect-all")
