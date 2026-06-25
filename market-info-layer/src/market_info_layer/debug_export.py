@@ -133,14 +133,45 @@ def _is_raw_column(name: str) -> bool:
     return name.lower() in RAW_COLUMN_NAMES
 
 
+def _raw_field_summary(col: str, value: Any) -> dict[str, Any]:
+    if value is None:
+        return {
+            f"{col}_original_length": None,
+            f"{col}_sha256": None,
+            f"{col}_preview": None,
+        }
+    if isinstance(value, bytes):
+        data = value
+        preview = value[:500].decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+        data = text.encode("utf-8")
+        preview = text[:500]
+    return {
+        f"{col}_original_length": len(data),
+        f"{col}_sha256": hashlib.sha256(data).hexdigest(),
+        f"{col}_preview": preview,
+    }
+
+
+def _export_fieldnames(columns: list[str], include_raw: bool) -> list[str]:
+    fieldnames: list[str] = []
+    for col in columns:
+        if not include_raw and _is_raw_column(col):
+            fieldnames.extend(
+                [f"{col}_original_length", f"{col}_sha256", f"{col}_preview"]
+            )
+        else:
+            fieldnames.append(col)
+    return fieldnames
+
+
 def _sanitize_row(row: sqlite3.Row, columns: list[str], include_raw: bool) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for col in columns:
         value = row[col]
-        if not include_raw and isinstance(value, str) and _is_raw_column(col):
-            out[f"{col}_original_length"] = len(value)
-            out[f"{col}_sha256"] = hashlib.sha256(value.encode("utf-8")).hexdigest()
-            out[f"{col}_preview"] = value[:500]
+        if not include_raw and _is_raw_column(col):
+            out.update(_raw_field_summary(col, value))
         else:
             out[col] = value
     return out
@@ -158,9 +189,14 @@ def _export_table_csv(
     columns = _column_names(column_info)
     rows = conn.execute(f"SELECT * FROM {_quote_ident(table)} LIMIT ?", (limit,)).fetchall()
     sanitized = [_sanitize_row(row, columns, include_raw) for row in rows]
-    fieldnames = list(sanitized[0].keys()) if sanitized else columns
+    fieldnames = _export_fieldnames(columns, include_raw)
+    if sanitized:
+        for row in sanitized:
+            for key in row:
+                if key not in fieldnames:
+                    fieldnames.append(key)
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(sanitized)
     return sanitized[:sample_limit]
