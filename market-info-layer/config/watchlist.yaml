@@ -1,0 +1,14 @@
+tickers:
+  - ticker: AAPL
+    company_name: Apple Inc.
+    cik: "320193"
+    sector: Technology
+    industry: Consumer Electronics
+    active: true
+    reason_watching: Example watchlist entry
+    thesis: Example research thesis
+    invalidation_condition: Example invalidation condition
+    catalyst: Example catalyst
+    next_known_date: null
+    confidence: 3
+    status: watching
