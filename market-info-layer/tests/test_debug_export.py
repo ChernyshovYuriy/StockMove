@@ -247,3 +247,117 @@ def test_health_check_reports_duplicate_filing_events_by_filing_item_type(tmp_pa
     assert duplicate["sec_item"] == "2.02"
     assert duplicate["event_type"] == "earnings"
     assert duplicate["count"] == 2
+
+
+def _seed_single_raw_column_table(db_path: Path, column_name: str, value: str) -> None:
+    con = sqlite3.connect(db_path)
+    con.execute(
+        f"CREATE TABLE debug_raw_{column_name} "
+        f"(id INTEGER PRIMARY KEY, {column_name} TEXT)"
+    )
+    con.execute(f"INSERT INTO debug_raw_{column_name} ({column_name}) VALUES (?)", (value,))
+    con.commit()
+    con.close()
+
+
+def _exported_rows(zip_path: Path, table_name: str) -> list[dict[str, str]]:
+    with zipfile.ZipFile(zip_path) as zf:
+        return list(csv.DictReader(zf.read(f"tables/{table_name}.csv").decode().splitlines()))
+
+
+def test_export_debug_works_when_table_has_raw_text_only(tmp_path, monkeypatch):
+    db_path = tmp_path / "raw_text.db"
+    _set_db(monkeypatch, db_path)
+    _seed_single_raw_column_table(db_path, "raw_text", "T" * 700)
+
+    result = runner.invoke(app, ["export-debug", "--output-dir", str(tmp_path / "exports")])
+
+    assert result.exit_code == 0, result.output
+    rows = _exported_rows(Path(result.output.strip()), "debug_raw_raw_text")
+    assert "raw_text" not in rows[0]
+    assert rows[0]["raw_text_original_length"] == "700"
+    assert len(rows[0]["raw_text_sha256"]) == 64
+    assert rows[0]["raw_text_preview"] == "T" * 500
+
+
+def test_export_debug_works_when_table_has_raw_xml(tmp_path, monkeypatch):
+    db_path = tmp_path / "raw_xml.db"
+    _set_db(monkeypatch, db_path)
+    _seed_single_raw_column_table(db_path, "raw_xml", "<root>" + "X" * 600 + "</root>")
+
+    result = runner.invoke(app, ["export-debug", "--output-dir", str(tmp_path / "exports")])
+
+    assert result.exit_code == 0, result.output
+    rows = _exported_rows(Path(result.output.strip()), "debug_raw_raw_xml")
+    assert "raw_xml" not in rows[0]
+    assert int(rows[0]["raw_xml_original_length"]) > 600
+    assert len(rows[0]["raw_xml_sha256"]) == 64
+    assert rows[0]["raw_xml_preview"].startswith("<root>")
+
+
+def test_export_debug_works_when_table_has_raw_html(tmp_path, monkeypatch):
+    db_path = tmp_path / "raw_html.db"
+    _set_db(monkeypatch, db_path)
+    _seed_single_raw_column_table(db_path, "raw_html", "<html>" + "H" * 600 + "</html>")
+
+    result = runner.invoke(app, ["export-debug", "--output-dir", str(tmp_path / "exports")])
+
+    assert result.exit_code == 0, result.output
+    rows = _exported_rows(Path(result.output.strip()), "debug_raw_raw_html")
+    assert "raw_html" not in rows[0]
+    assert int(rows[0]["raw_html_original_length"]) > 600
+    assert len(rows[0]["raw_html_sha256"]) == 64
+    assert rows[0]["raw_html_preview"].startswith("<html>")
+
+
+def test_export_debug_default_mode_does_not_crash_with_mixed_raw_columns(tmp_path, monkeypatch):
+    db_path = tmp_path / "mixed.db"
+    _set_db(monkeypatch, db_path)
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "CREATE TABLE docs "
+        "(id INTEGER PRIMARY KEY, raw_text TEXT, raw_xml TEXT, raw_html TEXT)"
+    )
+    con.execute("INSERT INTO docs (raw_text) VALUES (?)", ("text",))
+    con.execute(
+        "INSERT INTO docs (raw_xml, raw_html) VALUES (?, ?)",
+        ("<xml>later</xml>", "<html>later</html>"),
+    )
+    con.commit()
+    con.close()
+
+    result = runner.invoke(app, ["export-debug", "--output-dir", str(tmp_path / "exports")])
+
+    assert result.exit_code == 0, result.output
+    rows = _exported_rows(Path(result.output.strip()), "docs")
+    assert rows[1]["raw_xml_preview"] == "<xml>later</xml>"
+    assert rows[1]["raw_html_preview"] == "<html>later</html>"
+
+
+def test_export_debug_include_raw_documents_does_not_crash_with_mixed_raw_columns(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "mixed_include.db"
+    _set_db(monkeypatch, db_path)
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "CREATE TABLE docs "
+        "(id INTEGER PRIMARY KEY, raw_text TEXT, raw_xml TEXT, raw_html TEXT)"
+    )
+    con.execute("INSERT INTO docs (raw_text) VALUES (?)", ("text",))
+    con.execute(
+        "INSERT INTO docs (raw_xml, raw_html) VALUES (?, ?)",
+        ("<xml>later</xml>", "<html>later</html>"),
+    )
+    con.commit()
+    con.close()
+
+    result = runner.invoke(
+        app,
+        ["export-debug", "--output-dir", str(tmp_path / "exports"), "--include-raw-documents"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rows = _exported_rows(Path(result.output.strip()), "docs")
+    assert rows[1]["raw_xml"] == "<xml>later</xml>"
+    assert rows[1]["raw_html"] == "<html>later</html>"
