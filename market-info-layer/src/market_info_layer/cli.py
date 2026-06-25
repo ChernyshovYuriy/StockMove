@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from market_info_layer.analysis.daily_brief import generate_daily_brief
 from market_info_layer.collectors.fred_macro import collect_macro_observations
 from market_info_layer.collectors.nasdaq_halts import collect_halts
+from market_info_layer.collectors.sec_documents import process_sec_filings
 from market_info_layer.collectors.sec_edgar import collect_sec_filings
 from market_info_layer.db.database import get_engine
 from market_info_layer.db.database import init_db as create_db
@@ -71,6 +72,18 @@ def collect_sec() -> None:
     create_db()
     with session() as s:
         typer.echo(f"Inserted {collect_sec_filings(s)} SEC filings")
+
+
+@app.command("process-sec-filings")
+def process_sec_filings_command(
+    limit: int = typer.Option(50, "--limit"),
+    form_type: str | None = typer.Option(None, "--form-type"),
+    ticker: str | None = typer.Option(None, "--ticker"),
+) -> None:
+    create_db()
+    with session() as s:
+        count = process_sec_filings(s, limit=limit, form_type=form_type, ticker=ticker)
+        typer.echo(f"Processed {count} SEC filings")
 
 
 @app.command("collect-macro")
