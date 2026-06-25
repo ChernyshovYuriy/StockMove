@@ -104,3 +104,14 @@ python -m market_info_layer.cli process-sec-filings --form-type 8-K --limit 20
 ```
 
 The processor preserves the original `filings` rows, downloads each primary SEC document once into `filing_documents`, and stores interpreted data separately in `insider_transactions` and `filing_events`. All downloaded and parsed rows retain the SEC source URL and source `filing_id`.
+
+## Debug export
+
+Create a portable debug package with the SQLite schema, row counts, health checks, CSV table exports, project configuration files, and daily reports. The default export excludes secrets, virtual environments, Git metadata, the full SQLite database, and full raw filing document fields.
+
+```bash
+python -m market_info_layer.cli export-debug
+python -m market_info_layer.cli export-debug --include-db
+python -m market_info_layer.cli export-debug --include-raw-documents
+```
+
