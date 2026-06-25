@@ -290,3 +290,73 @@ def test_8k_item_507_merger_vote_is_medium():
         "Shareholders approved the merger agreement and related business combination."
     )
     assert rows[0]["importance"] in {"medium", "high"}
+
+
+def test_inline_xbrl_html_extraction_keeps_visible_8k_text_and_drops_noise():
+    html = """
+    <html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL">
+      <head>
+        <script>var technicalNoise = true;</script>
+        <style>.hidden { display: none; }</style>
+      </head>
+      <body>
+        <ix:header>
+          <ix:hidden>
+            <ix:nonNumeric name="dei:EntityTradingSymbol">ABC</ix:nonNumeric>
+            <ix:nonNumeric name="dei:DocumentPeriodEndDate">true</ix:nonNumeric>
+            us-gaap:LongTermDebtMember
+            http://fasb.org/us-gaap/2026
+            NASDAQ
+          </ix:hidden>
+        </ix:header>
+        <div style="display:none">false dei:AmendmentFlag NYSE</div>
+        <h2>Item 2.02 Results of Operations and Financial Condition.</h2>
+        <p>The company reported revenue growth and margin expansion in the quarter.</p>
+        <p>Exhibit 99.1 Press release dated June 25, 2026.</p>
+        <p>SIGNATURES</p>
+      </body>
+    </html>
+    """
+
+    text = sec_documents.extract_text(html)
+
+    assert "Item 2.02" in text
+    assert "reported revenue growth and margin expansion" in text
+    assert "Exhibit 99.1" in text
+    assert "SIGNATURES" in text
+    assert "technicalNoise" not in text
+    assert "EntityTradingSymbol" not in text
+    assert "LongTermDebtMember" not in text
+    assert "DocumentPeriodEndDate" not in text
+    assert "NASDAQ" not in text
+    assert "NYSE" not in text
+    assert "true" not in text.lower()
+    assert "false" not in text.lower()
+
+
+def test_process_8k_stores_clean_text_and_preserves_raw_html(monkeypatch, tmp_path):
+    html = """<html><body><ix:hidden>false dei:EntityCommonStockSharesOutstanding</ix:hidden>
+    <h2>Item 2.02 Results of Operations and Financial Condition.</h2>
+    <p>The visible business paragraph explains quarterly results.</p>
+    <p>SIGNATURES</p></body></html>"""
+    with _session(tmp_path) as session:
+        filing = _filing("8-K", "0008")
+        filing.primary_document = "doc.htm"
+        filing.filing_url = "https://www.sec.gov/Archives/doc.htm"
+        session.add(filing)
+        session.commit()
+        monkeypatch.setattr(
+            sec_documents,
+            "download_filing_document",
+            lambda url: sec_documents.DownloadedFilingDocument(html, url, "text/html", 200),
+        )
+
+        assert process_sec_filings(session, limit=10, form_type="8-K") == 1
+        doc = session.query(FilingDocument).one()
+        assert doc.raw_html == html
+        assert doc.raw_xml is None
+        assert "Item 2.02" in doc.raw_text
+        assert "visible business paragraph" in doc.raw_text
+        assert "EntityCommonStockSharesOutstanding" not in doc.raw_text
+        event = session.query(FilingEvent).one()
+        assert event.sec_item == "Item 2.02"

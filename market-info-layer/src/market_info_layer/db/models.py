@@ -56,6 +56,7 @@ class FilingDocument(Base):
     source_url: Mapped[str] = mapped_column(Text)
     raw_text: Mapped[str | None] = mapped_column(Text)
     raw_xml: Mapped[str | None] = mapped_column(Text)
+    raw_html: Mapped[str | None] = mapped_column(Text)
     downloaded_at: Mapped[str] = mapped_column(String)
     http_status_code: Mapped[int | None] = mapped_column(Integer)
     content_type: Mapped[str | None] = mapped_column(String)

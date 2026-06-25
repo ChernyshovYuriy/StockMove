@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -14,8 +15,106 @@ from market_info_layer.settings import get_settings
 from market_info_layer.utils.rate_limit import sleep_for
 from market_info_layer.utils.time import utc_now_iso
 
+_BLOCK_TAGS = {
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "caption",
+    "div",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "td",
+    "th",
+    "tr",
+}
+_IGNORED_TAGS = {"script", "style"}
+_XBRL_METADATA_PREFIXES = ("dei:", "link:", "xbrli:", "xbrldi:", "xlink:", "xsd:")
+_XBRL_METADATA_TAGS = {
+    "context",
+    "continuation",
+    "exclude",
+    "footnote",
+    "header",
+    "hidden",
+    "metadata",
+    "references",
+    "relationship",
+    "resources",
+    "schemaRef",
+    "unit",
+}
+_NOISE_VALUES = {"true", "false", "yes", "no", "dei", "iso4217", "shares", "usd"}
+_TRADING_VENUES = {"nasdaq", "nyse", "amex", "arca", "cboe", "otc", "otcqb", "otcqx"}
 
-class _TextExtractor(HTMLParser):
+
+class _SecHtmlTextExtractor(HTMLParser):
+    """Extract visible filing prose while ignoring inline-XBRL boilerplate."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._ignored_stack: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = tag.lower()
+        if self._should_ignore_start(normalized, dict(attrs)):
+            self._ignored_stack.append(normalized)
+            return
+        if normalized in _BLOCK_TAGS:
+            self._append_break()
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized = tag.lower()
+        if self._ignored_stack and self._ignored_stack[-1] == normalized:
+            self._ignored_stack.pop()
+            return
+        if not self._ignored_stack and normalized in _BLOCK_TAGS:
+            self._append_break()
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_stack:
+            return
+        text = re.sub(r"\s+", " ", data).strip()
+        if text:
+            self.parts.append(text)
+
+    def _append_break(self) -> None:
+        if self.parts and self.parts[-1] != "\n":
+            self.parts.append("\n")
+
+    def _should_ignore_start(self, tag: str, attrs: dict[str, str | None]) -> bool:
+        local_name = tag.rsplit(":", 1)[-1]
+        if tag in _IGNORED_TAGS:
+            return True
+        if tag.startswith(_XBRL_METADATA_PREFIXES):
+            return True
+        if tag.startswith("ix:") and local_name in _XBRL_METADATA_TAGS:
+            return True
+        if local_name in _XBRL_METADATA_TAGS and tag.startswith(("ix", "xbrl")):
+            return True
+        style = (attrs.get("style") or "").replace(" ", "").lower()
+        if "display:none" in style or "visibility:hidden" in style:
+            return True
+        hidden_attr = attrs.get("hidden")
+        aria_hidden = (attrs.get("aria-hidden") or "").lower()
+        return hidden_attr is not None or aria_hidden == "true"
+
+
+class _PlainTextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.parts: list[str] = []
@@ -23,7 +122,6 @@ class _TextExtractor(HTMLParser):
     def handle_data(self, data: str) -> None:
         if data.strip():
             self.parts.append(data.strip())
-
 
 @dataclass
 class DownloadedFilingDocument:
@@ -33,10 +131,40 @@ class DownloadedFilingDocument:
     status_code: int
 
 
+def _dedupe_noise_lines(lines: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen_noise: set[str] = set()
+    for line in lines:
+        compact = re.sub(r"\s+", " ", line).strip()
+        if not compact:
+            continue
+        normalized = compact.strip(" :;,.|\u00a0").lower()
+        is_short_noise = normalized in _NOISE_VALUES or normalized in _TRADING_VENUES
+        is_namespace_noise = bool(
+            re.fullmatch(
+                r"(?:[a-z][\w.-]*:)?(?:[a-z][\w.-]*)(?:member|axis|domain|abstract)?",
+                normalized,
+            )
+            and (":" in normalized or normalized.endswith(("member", "axis", "domain", "abstract")))
+            and len(normalized) < 80
+        )
+        is_repeated_ticker = bool(re.fullmatch(r"[A-Z]{1,5}", compact))
+        if is_short_noise or is_namespace_noise or is_repeated_ticker:
+            if normalized in seen_noise:
+                continue
+            seen_noise.add(normalized)
+            if is_short_noise or is_namespace_noise:
+                continue
+        cleaned.append(compact)
+    return cleaned
+
+
 def extract_text(content: str) -> str:
-    parser = _TextExtractor()
+    parser = _SecHtmlTextExtractor() if _looks_like_html(content) else _PlainTextExtractor()
     parser.feed(content)
-    return " ".join(parser.parts) or content
+    extracted = "\n".join(" ".join(parser.parts).split("\n")) if parser.parts else content
+    lines = _dedupe_noise_lines(extracted.splitlines())
+    return re.sub(r"[ \t]+", " ", "\n".join(lines)).strip() or content
 
 
 def download_filing_document(url: str) -> DownloadedFilingDocument:
@@ -177,6 +305,7 @@ def process_sec_filings(
                 source_url=download.final_url,
                 raw_text=text,
                 raw_xml=xml,
+                raw_html=content if _looks_like_html(content, download.content_type) else None,
                 downloaded_at=utc_now_iso(),
                 http_status_code=download.status_code,
                 content_type=download.content_type,
