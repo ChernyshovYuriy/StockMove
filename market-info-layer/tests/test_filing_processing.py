@@ -300,17 +300,46 @@ def test_8k_item_502_required_importance_examples():
     assert rows[0]["importance"] == "high"
 
     rows = parse_8k_items(
+        "Item 5.02 Departure of Directors or Certain Officers. Tim Cook transitions "
+        "from Chief Executive Officer to Executive Chair."
+    )
+    assert rows[0]["importance"] == "high"
+
+    rows = parse_8k_items(
         "Item 5.02 Departure of Directors or Certain Officers. The CFO resigned "
         "effective immediately."
     )
     assert rows[0]["importance"] == "high"
 
     rows = parse_8k_items(
+        "Item 5.02 Departure of Directors or Certain Officers. The Chief Financial "
+        "Officer will transition from her role."
+    )
+    assert rows[0]["importance"] == "high"
+
+    rows = parse_8k_items(
+        "Item 5.02 Departure of Directors or Certain Officers. The Chief Operating "
+        "Officer departed effective immediately."
+    )
+    assert rows[0]["importance"] == "high"
+
+    rows = parse_8k_items(
+        "Item 5.02 Appointment of Certain Officers. The Principal Accounting Officer "
+        "will transition to a new role."
+    )
+    assert rows[0]["importance"] == "medium"
+
+    rows = parse_8k_items(
+        "Item 5.02 Appointment of Certain Officers. The General Counsel was named "
+        "to a different senior officer role."
+    )
+    assert rows[0]["importance"] == "medium"
+
+    rows = parse_8k_items(
         "Item 5.02 Compensatory Arrangements of Certain Officers. The company adopted "
         "an employee stock plan for eligible employees."
     )
-    assert rows[0]["importance"] != "high"
-    assert rows[0]["importance"] in {"low", "medium"}
+    assert rows[0]["importance"] == "low"
 
     rows = parse_8k_items(
         "Item 5.02 Election of Directors. Jane Doe was appointed to the board as an "
@@ -320,9 +349,9 @@ def test_8k_item_502_required_importance_examples():
 
     rows = parse_8k_items(
         "Item 5.02 Compensatory Arrangements of Certain Officers. The company updated "
-        "its cash incentive plan and compensation plan."
+        "its Executive Cash Incentive Plan and compensation plan."
     )
-    assert rows[0]["importance"] in {"low", "medium"}
+    assert rows[0]["importance"] == "low"
 
 
 def test_inline_xbrl_html_extraction_keeps_visible_8k_text_and_drops_noise():
@@ -372,6 +401,34 @@ def test_inline_xbrl_html_extraction_keeps_visible_8k_text_and_drops_noise():
     assert "NYSE" not in text
     assert "true" not in text.lower()
     assert "false" not in text.lower()
+
+
+def test_inline_xbrl_cover_page_facts_are_trimmed_to_filing_body():
+    html = """
+    <html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL">
+      <body>
+        <div>
+          aapl-20260430 false 0000320193 0000320193 2026-04-30
+          2026-04-30 NASDAQ NASDAQ NASDAQ us-gaap:CommonStockMember
+        </div>
+        <div>FORM 8-K</div>
+        <div>Item 2.02 Results of Operations and Financial Condition.</div>
+        <p>The company reported quarterly results.</p>
+        <p>SIGNATURE</p>
+      </body>
+    </html>
+    """
+
+    text = sec_documents.extract_text(html)
+
+    assert not text.lower().startswith("false")
+    assert not text.startswith("aapl-20260430")
+    assert not text.startswith("0000320193")
+    assert text.startswith("FORM 8-K")
+    assert "Item 2.02" in text
+    assert "SIGNATURE" in text
+    assert "NASDAQ NASDAQ NASDAQ" not in text
+    assert "us-gaap:CommonStockMember" not in text
 
 
 def test_process_8k_stores_clean_text_and_preserves_raw_html(monkeypatch, tmp_path):

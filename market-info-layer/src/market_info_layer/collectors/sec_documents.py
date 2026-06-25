@@ -59,6 +59,14 @@ _XBRL_METADATA_TAGS = {
 }
 _NOISE_VALUES = {"true", "false", "yes", "no", "dei", "iso4217", "shares", "usd"}
 _TRADING_VENUES = {"nasdaq", "nyse", "amex", "arca", "cboe", "otc", "otcqb", "otcqx"}
+_MEANINGFUL_FILING_MARKER_RE = re.compile(
+    r"\b(?:UNITED\s+STATES\s+SECURITIES\s+AND\s+EXCHANGE\s+COMMISSION|"
+    r"FORM\s+8-K|CURRENT\s+REPORT|Item\s+[1-9]\.\d{2}|SIGNATURES?)\b",
+    re.I,
+)
+_CIK_RE = re.compile(r"\b\d{10}\b")
+_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_ACCESSIONISH_RE = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
 
 
 class _SecHtmlTextExtractor(HTMLParser):
@@ -174,8 +182,36 @@ def _dedupe_noise_lines(lines: list[str]) -> list[str]:
     return cleaned
 
 
+def _trim_to_meaningful_filing_text(text: str) -> str:
+    """Drop leading inline-XBRL cover-page fact runs before the visible filing body."""
+    match = _MEANINGFUL_FILING_MARKER_RE.search(text)
+    if match is None:
+        return text
+    prefix = text[: match.start()]
+    prefix_tokens = re.findall(r"[A-Za-z0-9_.:-]+", prefix)
+    if not prefix_tokens:
+        return text[match.start() :]
+    technical_tokens = 0
+    for token in prefix_tokens:
+        normalized = token.strip(" :;,.|\u00a0").lower()
+        if (
+            normalized in _NOISE_VALUES
+            or normalized in _TRADING_VENUES
+            or _CIK_RE.fullmatch(token)
+            or _DATE_RE.fullmatch(token)
+            or _ACCESSIONISH_RE.fullmatch(token)
+            or ":" in token
+            or re.fullmatch(r"[a-z]{1,6}-?\d{8}", normalized)
+        ):
+            technical_tokens += 1
+    if technical_tokens / max(len(prefix_tokens), 1) >= 0.45 or len(prefix) < 2000:
+        return text[match.start() :]
+    return text
+
+
 def _normalize_extracted_text(text: str) -> str:
     text = re.sub(r"\b(?:true|false)(?:\s+(?:true|false)){1,}\b", " ", text, flags=re.I)
+    text = re.sub(r"\b\d{10}(?:\s+\d{10}){1,}\b", " ", text)
     venue_pattern = "|".join(sorted(_TRADING_VENUES, key=len, reverse=True))
     text = re.sub(rf"\b({venue_pattern})(?:\s+\1){{1,}}\b", " ", text, flags=re.I)
     text = re.sub(r"\b[a-z][\w.-]*:[A-Za-z0-9_.-]+\b", " ", text)
@@ -189,7 +225,8 @@ def extract_text(content: str) -> str:
     parser.feed(content)
     extracted = "\n".join(" ".join(parser.parts).split("\n")) if parser.parts else content
     normalized = _normalize_extracted_text(extracted)
-    lines = _dedupe_noise_lines(normalized.splitlines())
+    trimmed = _trim_to_meaningful_filing_text(normalized)
+    lines = _dedupe_noise_lines(trimmed.splitlines())
     return _normalize_extracted_text("\n".join(lines)) or content
 
 
