@@ -47,10 +47,28 @@ _HIGH_202_RE = re.compile(
     r"\b(guidance|outlook|restatement|material weakness|going concern|impairment)\b", re.I
 )
 _MEDIUM_507_RE = re.compile(
-    r"\b(merger|acquisition|activist|contested vote|contest(?:ed)? election|proxy contest|"
-    r"major governance|governance issue)\b",
+    r"\b(merger agreement|merger|business combination|change of control|"
+    r"contested vote|contest(?:ed)? election|proxy contest|activist campaign|"
+    r"activist investor|major governance|governance overhaul|special meeting|"
+    r"poison pill|shareholder rights plan)\b",
     re.I,
 )
+
+SEC_ITEM_HEADER_TITLES = {
+    "1.01": r"entry\s+into\s+a\s+material\s+definitive\s+agreement",
+    "2.02": r"results\s+of\s+operations\s+and\s+financial\s+condition",
+    "2.05": r"costs?\s+associated\s+with\s+exit\s+or\s+disposal\s+activities",
+    "2.06": r"material\s+impairments?",
+    "3.01": r"notice\s+of\s+delisting|failure\s+to\s+satisfy\s+(?:a\s+)?continued\s+listing",
+    "5.02": (
+        r"departure\s+of\s+directors?|certain\s+officers?|election\s+of\s+directors?|"
+        r"appointment\s+of\s+certain\s+officers?|compensatory\s+arrangements"
+    ),
+    "5.07": r"submission\s+of\s+matters?\s+to\s+a\s+vote\s+of\s+security\s+holders?",
+    "7.01": r"regulation\s+fd\s+disclosure",
+    "8.01": r"other\s+events?",
+    "9.01": r"financial\s+statements?\s+and\s+exhibits?",
+}
 
 
 class _TextExtractor(HTMLParser):
@@ -124,31 +142,56 @@ def _event_summary(sec_item: str, context: str, detail: str) -> str:
     return detail
 
 
+def _find_item_headers(text: str) -> list[re.Match[str]]:
+    alternatives = "|".join(
+        rf"(?P<i{number.replace('.', '_')}>"
+        rf"Item\s+{re.escape(number)}(?!\s*\()\s*[:.\-–—]?\s*(?:{title}))"
+        for number, title in SEC_ITEM_HEADER_TITLES.items()
+    )
+    pattern = re.compile(alternatives, re.I)
+    matches = list(pattern.finditer(text))
+    if not matches:
+        leading_item = re.match(r"\s*Item\s+([1-9]\.\d{2})(?!\s*\()\s*[:.\-–—]?", text, re.I)
+        if leading_item and leading_item.group(1) in ITEM_TYPES:
+            matches = [leading_item]
+    return matches
+
+
+def _header_item_number(match: re.Match[str]) -> str:
+    found = re.search(r"Item\s+([1-9]\.\d{2})", match.group(0), re.I)
+    if found is None:  # defensive; _find_item_headers only returns Item headers.
+        raise ValueError(f"Unable to identify 8-K item header: {match.group(0)!r}")
+    return found.group(1)
+
+
 def parse_8k_items(raw_text: str) -> list[dict[str, str]]:
     text = extract_text(raw_text)
-    pattern = re.compile(
-        r"Item\s+([1-9]\.\d{2})\s*[:.\-]?\s*(.*?)(?=\s+Item\s+[1-9]\.\d{2}|$)", re.I
-    )
-    matches = list(pattern.finditer(text))
-    item_numbers = [match.group(1) for match in matches]
+    matches = _find_item_headers(text)
+    item_numbers = [_header_item_number(match) for match in matches]
     has_other_events = any(number != "9.01" for number in item_numbers)
-    items: list[dict[str, str]] = []
-    for match in matches:
-        number = match.group(1)
+    items_by_sec_item: dict[str, dict[str, str]] = {}
+    for index, match in enumerate(matches):
+        number = _header_item_number(match)
         sec_item = f"Item {number}"
-        nearby = match.group(2).strip()
+        next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        nearby = text[match.end() : next_start].strip()
         event_type = ITEM_TYPES.get(number, "Other filing event")
         importance, detail = _classify_item(sec_item, nearby, has_other_events)
-        items.append(
-            {
-                "sec_item": sec_item,
-                "event_type": event_type,
-                "headline": event_type,
-                "summary": _event_summary(sec_item, nearby, detail),
-                "importance": importance,
-            }
+        item = {
+            "sec_item": sec_item,
+            "event_type": event_type,
+            "headline": event_type,
+            "summary": _event_summary(sec_item, nearby, detail),
+            "importance": importance,
+        }
+        existing = items_by_sec_item.get(sec_item)
+        should_replace = (
+            existing is None
+            or IMPORTANCE_RANK[importance] < IMPORTANCE_RANK[existing["importance"]]
         )
-    return items
+        if should_replace:
+            items_by_sec_item[sec_item] = item
+    return list(items_by_sec_item.values())
 
 
 def store_8k_events(

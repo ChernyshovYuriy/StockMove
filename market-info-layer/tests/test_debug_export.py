@@ -182,3 +182,68 @@ def test_include_db_copies_sqlite_database(tmp_path, monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert db_path.name in _zip_names(Path(result.output.strip()))
+
+
+def test_small_metadata_fields_remain_readable_by_default(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _set_db(monkeypatch, db_path)
+    _seed(db_path)
+
+    result = runner.invoke(app, ["export-debug", "--output-dir", str(tmp_path / "exports")])
+
+    assert result.exit_code == 0, result.output
+    zip_path = Path(result.output.strip())
+    with zipfile.ZipFile(zip_path) as zf:
+        doc_rows = list(
+            csv.DictReader(zf.read("tables/filing_documents.csv").decode().splitlines())
+        )
+        filing_rows = list(csv.DictReader(zf.read("tables/filings.csv").decode().splitlines()))
+        event_rows = list(
+            csv.DictReader(zf.read("tables/filing_events.csv").decode().splitlines())
+        )
+    assert doc_rows[0]["content_type"] == "text/html"
+    assert doc_rows[0]["source_url"] == "https://example.com/a"
+    assert filing_rows[0]["primary_document"] == "a.htm"
+    assert filing_rows[0]["source"] == "sec"
+    assert filing_rows[0]["filing_url"] == "https://example.com/a"
+    assert event_rows[0]["source_url"] == "https://example.com/a"
+
+
+def test_health_check_reports_duplicate_filing_events_by_filing_item_type(tmp_path, monkeypatch):
+    db_path = tmp_path / "test.db"
+    _set_db(monkeypatch, db_path)
+    _seed(db_path)
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "INSERT INTO filing_events "
+        "(filing_id,ticker,form_type,event_date,event_type,sec_item,headline,"
+        "summary,importance,source_url,needs_human_review,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            999,
+            "ABC",
+            "8-K",
+            "2026-01-03",
+            "earnings",
+            "2.02",
+            "h2",
+            "s2",
+            "high",
+            "https://example.com/a",
+            0,
+            "now",
+        ),
+    )
+    con.commit()
+    con.close()
+
+    result = runner.invoke(app, ["export-debug", "--output-dir", str(tmp_path / "exports")])
+
+    assert result.exit_code == 0, result.output
+    with zipfile.ZipFile(Path(result.output.strip())) as zf:
+        health = json.loads(zf.read("health_checks.json"))
+    duplicate = health["duplicates"]["filing_events_by_filing_item_type"][0]
+    assert duplicate["filing_id"] == 999
+    assert duplicate["sec_item"] == "2.02"
+    assert duplicate["event_type"] == "earnings"
+    assert duplicate["count"] == 2
