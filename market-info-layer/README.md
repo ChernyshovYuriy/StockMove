@@ -10,7 +10,7 @@ This project is for research and journaling only. It is not financial advice and
 - Loads a YAML watchlist.
 - Collects deterministic SEC EDGAR filing metadata for watchlist tickers.
 - Collects configured FRED macro observations.
-- Collects current Nasdaq trading halt data defensively.
+- Collects current Nasdaq trading halt data defensively from the Nasdaq Trade Halt RSS feed intended for applications.
 - Generates a daily Markdown brief, with optional backfill/review modes for recently processed filings.
 - Provides a local Streamlit dashboard for review and manual notes.
 - Keeps raw facts separate from interpretation and placeholders for optional future AI analysis.
@@ -87,7 +87,7 @@ Use `--date YYYY-MM-DD` to choose the report date and `--output-name TEXT` to wr
 - `filings`: SEC filing metadata and filing URLs, deduplicated by accession number.
 - `macro_events`: dated macro calendar events.
 - `macro_observations`: FRED observations with realtime metadata.
-- `trading_halts`: Nasdaq halt facts.
+- `trading_halts`: Nasdaq halt facts collected from the Nasdaq Trade Halt RSS feed (`https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts`).
 - `prices`: daily price bars from isolated providers.
 - `daily_notes`: human-authored journal notes.
 - `ai_analysis_placeholder`: separated optional future interpretation layer.
