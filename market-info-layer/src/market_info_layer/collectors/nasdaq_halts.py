@@ -1,3 +1,9 @@
+from __future__ import annotations
+
+import re
+import time
+import xml.etree.ElementTree as ET
+from html import unescape
 from html.parser import HTMLParser
 
 import pandas as pd
@@ -10,6 +16,9 @@ from market_info_layer.db.models import TradingHalt
 from market_info_layer.utils.time import utc_now_iso
 
 NASDAQ_HALTS_URL = "https://www.nasdaqtrader.com/trader.aspx?id=TradeHalts"
+NASDAQ_HALTS_RSS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
+MIN_FETCH_INTERVAL_SECONDS = 60
+_LAST_FETCH_MONOTONIC: float | None = None
 
 
 class HaltParseError(ValueError):
@@ -50,6 +59,17 @@ class _SimpleTableParser(HTMLParser):
             self._current_table = None
 
 
+class _TextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if text:
+            self.parts.append(text)
+
+
 def _tables_from_html(html: str) -> list[pd.DataFrame]:
     try:
         return pd.read_html(html)
@@ -75,6 +95,87 @@ def _cell(row, *names: str) -> str | None:
             if text and text.lower() != "nan":
                 return text
     return None
+
+
+def _clean_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", unescape(value)).strip()
+    return text or None
+
+
+def _rss_child_text(item: ET.Element, name: str) -> str | None:
+    for child in item:
+        if child.tag.rsplit("}", 1)[-1].lower() == name.lower():
+            return _clean_text(child.text)
+    return None
+
+
+def _description_text(description: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(unescape(description))
+    return " | ".join(parser.parts) if parser.parts else _clean_text(description) or ""
+
+
+def _labeled_value(text: str, *labels: str) -> str | None:
+    for label in labels:
+        match = re.search(
+            rf"(?:^|[|\n;])\s*{re.escape(label)}(?!\s*[A-Za-z])\s*:?\s*(.*?)(?=\s*(?:[|\n;]|$))",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return _clean_text(match.group(1))
+    return None
+
+
+def parse_halts_rss(xml_text: str) -> list[dict[str, str | None]]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise HaltParseError("Malformed Nasdaq trade halt RSS feed") from exc
+
+    items = [elem for elem in root.iter() if elem.tag.rsplit("}", 1)[-1].lower() == "item"]
+    if not items:
+        return []
+
+    collected_at = utc_now_iso()
+    rows: list[dict[str, str | None]] = []
+    for item in items:
+        title = _rss_child_text(item, "title") or ""
+        description = _rss_child_text(item, "description") or ""
+        row = None
+        if "<table" in description.lower():
+            try:
+                parsed_rows = parse_halts_html(description)
+            except HaltParseError:
+                parsed_rows = []
+            if parsed_rows:
+                row = parsed_rows[0] | {
+                    "source": NASDAQ_HALTS_RSS_URL,
+                    "collected_at": collected_at,
+                }
+        if row is None:
+            text = _description_text(description)
+            ticker = _labeled_value(text, "Issue Symbol", "Symbol", "Ticker")
+            if ticker is None:
+                ticker_match = re.search(
+                    r"(?:Trade Halt|Halt)\s*[-:]\s*([A-Z0-9.\-]+)", title, re.I
+                )
+                ticker = _clean_text(ticker_match.group(1)) if ticker_match else _clean_text(title)
+            row = {
+                "ticker": ticker,
+                "halt_time": _labeled_value(text, "Halt Time", "Time")
+                or _rss_child_text(item, "pubDate"),
+                "resume_time": _labeled_value(text, "Resumption Trade Time", "Resume Time"),
+                "reason_code": _labeled_value(text, "Reason Code", "Code"),
+                "reason_text": _labeled_value(text, "Reason", "Reason Text"),
+                "source": NASDAQ_HALTS_RSS_URL,
+                "collected_at": collected_at,
+            }
+        if row.get("ticker"):
+            rows.append(row)
+    return rows
 
 
 def parse_halts_html(html: str) -> list[dict[str, str | None]]:
@@ -119,11 +220,25 @@ def _halt_exists(session: Session, row: dict[str, str | None]) -> bool:
     )
 
 
+def _can_fetch_now() -> bool:
+    global _LAST_FETCH_MONOTONIC
+    now = time.monotonic()
+    if (
+        _LAST_FETCH_MONOTONIC is not None
+        and now - _LAST_FETCH_MONOTONIC < MIN_FETCH_INTERVAL_SECONDS
+    ):
+        return False
+    _LAST_FETCH_MONOTONIC = now
+    return True
+
+
 def collect_halts(session: Session) -> int:
-    response = requests.get(NASDAQ_HALTS_URL, timeout=30)
+    if not _can_fetch_now():
+        return 0
+    response = requests.get(NASDAQ_HALTS_RSS_URL, timeout=30)
     response.raise_for_status()
     inserted = 0
-    for row in parse_halts_html(response.text):
+    for row in parse_halts_rss(response.text):
         if _halt_exists(session, row):
             continue
         session.add(TradingHalt(**row))
