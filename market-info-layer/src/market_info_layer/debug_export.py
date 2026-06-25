@@ -301,6 +301,7 @@ def _health_checks(
         ("insider_transactions", "transaction_type"),
         ("trading_halts", "ticker"),
         ("macro_observations", "series_id"),
+        ("prices", "ticker"),
     ]:
         if _has(tables, columns, table, col):
             checks["counts"][f"{table}_by_{col}"] = _group_count(conn, table, col)
@@ -349,6 +350,22 @@ def _health_checks(
             for r in conn.execute(
                 "SELECT filing_id, sec_item, event_type, COUNT(*) AS count FROM filing_events "
                 "GROUP BY filing_id, sec_item, event_type HAVING COUNT(*) > 1"
+            )
+        ]
+    if _has(tables, columns, "prices", "ticker", "price_date"):
+        checks["latest_dates"]["latest_price_date_by_ticker"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT ticker, MAX(price_date) AS latest_price_date "
+                "FROM prices GROUP BY ticker ORDER BY ticker"
+            )
+        ]
+    if _has(tables, columns, "prices", "ticker", "price_date", "source"):
+        checks["duplicates"]["prices_by_ticker_price_date_source"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT ticker, price_date, source, COUNT(*) AS count FROM prices "
+                "GROUP BY ticker, price_date, source HAVING COUNT(*) > 1"
             )
         ]
     if _has(tables, columns, "macro_observations", "series_id", "observation_date"):

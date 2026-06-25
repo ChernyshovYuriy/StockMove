@@ -5,6 +5,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from market_info_layer.analysis.price_context import event_price_reaction
 from market_info_layer.collectors.fred_macro import latest_macro_values
 from market_info_layer.db.models import (
     Filing,
@@ -51,30 +52,54 @@ def _event_summary(event: FilingEvent) -> str:
     return _truncate(". ".join(summary_parts) if summary_parts else "No summary available.", 240)
 
 
-def _format_event_debug(event: FilingEvent) -> str:
+def _format_price_context(session: Session, event: FilingEvent) -> str:
+    if not event.event_date:
+        return "Price reaction around event: unavailable (missing event date; needs human review)."
+    reaction = event_price_reaction(session, event.ticker, event.event_date)
+    if reaction.close_event_or_next is None:
+        return "Price reaction around event: unavailable (no stored prices; needs human review)."
+    def fmt(value):
+        return "n/a" if value is None else f"{value:.2f}"
+    def fmti(value):
+        return "n/a" if value is None else str(value)
+    return (
+        "Price reaction around event (same-period movement; needs human review): "
+        f"close_prev={fmt(reaction.close_prev)}, "
+        f"close_event_or_next={fmt(reaction.close_event_or_next)}, "
+        f"close_plus_1={fmt(reaction.close_plus_1)}, pct_1d={fmt(reaction.pct_1d)}%, "
+        f"close_plus_5={fmt(reaction.close_plus_5)}, pct_5d={fmt(reaction.pct_5d)}%, "
+        f"volume_event={fmti(reaction.volume_event)}, "
+        f"avg_volume_20d={fmt(reaction.avg_volume_20d)}, "
+        f"volume_ratio={fmt(reaction.volume_ratio)}"
+    )
+
+
+def _format_event_debug(session: Session, event: FilingEvent) -> str:
     return (
         f"- [{event.importance or 'unknown'}] {event.ticker} {event.sec_item or event.form_type}: "
         f"event_date={event.event_date or 'unknown'} form_type={event.form_type} "
         f"sec_item={event.sec_item or 'n/a'} event_type={event.event_type or 'n/a'} "
         f"needs_human_review={event.needs_human_review}: "
-        f"{event.headline or 'No headline'}. {event.summary or ''} Source: {event.source_url}"
+        f"{event.headline or 'No headline'}. {event.summary or ''} "
+        f"{_format_price_context(session, event)} Source: {event.source_url}"
     )
 
 
-def _format_event_compact(event: FilingEvent) -> str:
+def _format_event_compact(session: Session, event: FilingEvent) -> str:
     return (
         f"[{event.importance or 'unknown'}] {event.ticker} — "
         f"{event.event_date or 'unknown'} — {event.sec_item or event.form_type or 'n/a'}\n"
         f"Event: {event.event_type or 'n/a'}\n"
         f"Summary: {_event_summary(event)}\n"
-        f"Source: {event.source_url}"
+        f"Source: {event.source_url}\n"
+        f"{_format_price_context(session, event)}"
     )
 
 
-def _format_event(event: FilingEvent, style: ReportStyle) -> str:
+def _format_event(session: Session, event: FilingEvent, style: ReportStyle) -> str:
     if style == "debug":
-        return _format_event_debug(event)
-    return _format_event_compact(event)
+        return _format_event_debug(session, event)
+    return _format_event_compact(session, event)
 
 
 def _format_macro_latest(row: dict) -> str:
@@ -191,15 +216,15 @@ def generate_daily_brief(
         "Speculation: None.",
         "",
         "## Parsed filing events",
-        *(_format_event(e, style) for e in material_events),
+        *(_format_event(session, e, style) for e in material_events),
         *(["- No parsed filing events for this selection."] if not material_events else []),
         "",
         "## Low-importance parsed filing events",
-        *(_format_event(e, style) for e in low_events),
+        *(_format_event(session, e, style) for e in low_events),
         *(["- No low-importance parsed filing events."] if not low_events else []),
         "",
         "## Recently processed filing events",
-        *(_format_event(e, style) for e in processed_events),
+        *(_format_event(session, e, style) for e in processed_events),
         *(
             ["- Not requested. Use --processed-today to populate this section."]
             if not processed_today

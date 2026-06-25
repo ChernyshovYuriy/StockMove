@@ -164,3 +164,14 @@ python -m market_info_layer.cli export-debug --include-db
 python -m market_info_layer.cli export-debug --include-raw-documents
 ```
 
+
+### Price collection
+
+Collect daily OHLCV bars for active watchlist tickers:
+
+```bash
+python -m market_info_layer.cli collect-prices
+python -m market_info_layer.cli collect-prices --ticker AAPL --period 2y
+```
+
+The price collector stores one row per ticker, trading date, and source to avoid duplicate rows when the command is rerun. Reports describe price reaction around events as same-period movement requiring human review, not as causation or trading advice.

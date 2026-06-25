@@ -11,6 +11,7 @@ from market_info_layer.db.models import (
     FilingEvent,
     InsiderTransaction,
     MacroObservation,
+    Price,
     TradingHalt,
     Watchlist,
 )
@@ -36,6 +37,7 @@ page = st.sidebar.radio(
         "Insider transactions",
         "Filing events",
         "Macro observations",
+        "Prices",
         "Trading halts",
         "Daily brief viewer",
         "Manual daily notes entry",
@@ -169,6 +171,38 @@ with Session(get_engine()) as session:
         if not df.empty:
             df = df.sort_values(by=["series_id", "observation_date"], ascending=[True, False])
         st.dataframe(df, hide_index=True)
+    elif page == "Prices":
+        rows = dashboard_rows(session, Price)
+        df = pd.DataFrame(rows)
+        if df.empty:
+            st.info("No prices collected yet.")
+        else:
+            ticker = st.text_input("Ticker filter").upper().strip()
+            if ticker:
+                df = df[df["ticker"] == ticker]
+            df = df.sort_values(by=["ticker", "price_date"], ascending=[True, False])
+            st.subheader("Latest price by ticker")
+            latest = df.sort_values("price_date").groupby("ticker", as_index=False).tail(1)
+            st.dataframe(
+                latest[["ticker", "price_date", "close", "volume", "source"]],
+                hide_index=True,
+            )
+            st.subheader("Close price chart")
+            chart_df = df.sort_values("price_date")
+            if ticker:
+                st.line_chart(chart_df, x="price_date", y="close")
+            else:
+                st.line_chart(chart_df, x="price_date", y="close", color="ticker")
+            st.subheader("Volume chart")
+            if ticker:
+                st.bar_chart(chart_df, x="price_date", y="volume")
+            else:
+                st.bar_chart(chart_df, x="price_date", y="volume", color="ticker")
+            st.subheader("Historical OHLCV")
+            st.dataframe(
+                df[["ticker", "price_date", "open", "high", "low", "close", "volume", "source"]],
+                hide_index=True,
+            )
     elif page == "Trading halts":
         rows = dashboard_rows(session, TradingHalt)
         df = pd.DataFrame(rows)
