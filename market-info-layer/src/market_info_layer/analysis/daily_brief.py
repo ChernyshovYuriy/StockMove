@@ -4,7 +4,14 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from market_info_layer.db.models import Filing, MacroObservation, TradingHalt, Watchlist
+from market_info_layer.db.models import (
+    Filing,
+    FilingEvent,
+    InsiderTransaction,
+    MacroObservation,
+    TradingHalt,
+    Watchlist,
+)
 from market_info_layer.settings import ROOT_DIR
 
 
@@ -23,16 +30,44 @@ def generate_daily_brief(
     macros = session.scalars(
         select(MacroObservation).order_by(MacroObservation.observation_date.desc()).limit(10)
     ).all()
+    events = session.scalars(
+        select(FilingEvent).where(FilingEvent.event_date == brief_date.isoformat())
+    ).all()
+    insiders = session.scalars(
+        select(InsiderTransaction).where(InsiderTransaction.importance.in_(["high", "medium"]))
+    ).all()
+    review_filings = [
+        f for f in filings if not f.processed and f.form_type in {"8-K", "10-K", "10-Q", "S-1"}
+    ]
     lines = [
         "# Market Information Layer Daily Brief",
         "",
         f"Date: {brief_date.isoformat()}",
         "",
-        "## Macro context",
-        "Known facts:",
+        "## Known facts",
+        "Macro context:",
         *(f"- {m.series_id} {m.observation_date}: {m.value} (source: {m.source})" for m in macros),
         "Interpretation: Not generated in version 1.",
         "Speculation: None.",
+        "",
+        "## Parsed filing events",
+        *(
+            f"- {e.ticker} {e.sec_item or e.form_type}: {e.headline} ({e.source_url})"
+            for e in events
+        ),
+        "",
+        "## Insider transactions",
+        *(
+            f"- {i.ticker} {i.owner_name}: {i.transaction_type} {i.shares} shares "
+            f"at {i.price} on {i.transaction_date} ({i.importance}) {i.source_url}"
+            for i in insiders
+        ),
+        "",
+        "## Unprocessed filings requiring review",
+        *(
+            f"- {f.ticker} {f.form_type} filed {f.filing_date}: {f.filing_url}"
+            for f in review_filings
+        ),
         "",
         "## New SEC filings for watchlist tickers",
         "Known facts:",
@@ -47,7 +82,7 @@ def generate_daily_brief(
             for h in halts
         ),
         "",
-        "## Watchlist review",
+        "## Watchlist implications",
         "Known facts:",
         *(f"- {w.ticker}: status={w.status}, confidence={w.confidence}" for w in watch),
         "Interpretation: Human-maintained thesis fields remain separate from raw facts.",

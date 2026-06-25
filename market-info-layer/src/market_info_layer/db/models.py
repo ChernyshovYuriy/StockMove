@@ -47,6 +47,54 @@ class Filing(Base):
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class FilingDocument(Base):
+    __tablename__ = "filing_documents"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    filing_id: Mapped[int] = mapped_column(Integer, unique=True)
+    ticker: Mapped[str | None] = mapped_column(String)
+    form_type: Mapped[str | None] = mapped_column(String)
+    source_url: Mapped[str] = mapped_column(Text)
+    raw_text: Mapped[str | None] = mapped_column(Text)
+    raw_xml: Mapped[str | None] = mapped_column(Text)
+    downloaded_at: Mapped[str] = mapped_column(String)
+
+
+class InsiderTransaction(Base):
+    __tablename__ = "insider_transactions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    filing_id: Mapped[int] = mapped_column(Integer)
+    ticker: Mapped[str] = mapped_column(String)
+    owner_name: Mapped[str | None] = mapped_column(Text)
+    owner_role: Mapped[str | None] = mapped_column(Text)
+    transaction_date: Mapped[str | None] = mapped_column(String)
+    transaction_code: Mapped[str | None] = mapped_column(String)
+    transaction_type: Mapped[str | None] = mapped_column(String)
+    shares: Mapped[float | None] = mapped_column(Float)
+    price: Mapped[float | None] = mapped_column(Float)
+    direct_or_indirect: Mapped[str | None] = mapped_column(String)
+    shares_owned_after: Mapped[float | None] = mapped_column(Float)
+    source_url: Mapped[str] = mapped_column(Text)
+    collected_at: Mapped[str] = mapped_column(String)
+    importance: Mapped[str | None] = mapped_column(String)
+
+
+class FilingEvent(Base):
+    __tablename__ = "filing_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    filing_id: Mapped[int] = mapped_column(Integer)
+    ticker: Mapped[str] = mapped_column(String)
+    form_type: Mapped[str] = mapped_column(String)
+    event_date: Mapped[str | None] = mapped_column(String)
+    event_type: Mapped[str | None] = mapped_column(String)
+    sec_item: Mapped[str | None] = mapped_column(String)
+    headline: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text)
+    importance: Mapped[str | None] = mapped_column(String)
+    source_url: Mapped[str] = mapped_column(Text)
+    needs_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(String)
+
+
 class MacroEvent(Base):
     __tablename__ = "macro_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

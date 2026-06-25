@@ -91,3 +91,16 @@ Every external record includes a source and collection timestamp.
 pytest
 ruff check .
 ```
+
+
+## Processing SEC filing documents
+
+After collecting SEC filing metadata with `collect-sec`, parse selected filing documents into normalized event tables:
+
+```bash
+python -m market_info_layer.cli process-sec-filings --limit 50
+python -m market_info_layer.cli process-sec-filings --form-type 4 --limit 20
+python -m market_info_layer.cli process-sec-filings --form-type 8-K --limit 20
+```
+
+The processor preserves the original `filings` rows, downloads each primary SEC document once into `filing_documents`, and stores interpreted data separately in `insider_transactions` and `filing_events`. All downloaded and parsed rows retain the SEC source URL and source `filing_id`.
