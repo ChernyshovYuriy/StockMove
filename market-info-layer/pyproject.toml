@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+prices = ["yfinance>=0.2"]
 dev = ["pytest>=8.0", "ruff>=0.5"]
 
 [project.scripts]

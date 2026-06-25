@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from market_info_layer.analysis.daily_brief import DEFAULT_MAX_UNPROCESSED, generate_daily_brief
 from market_info_layer.collectors.fred_macro import collect_macro_observations
 from market_info_layer.collectors.nasdaq_halts import collect_halts
+from market_info_layer.collectors.prices import collect_prices
 from market_info_layer.collectors.sec_documents import process_sec_filings
 from market_info_layer.collectors.sec_edgar import collect_sec_filings
 from market_info_layer.db.database import get_engine
@@ -103,11 +104,25 @@ def collect_halts_command() -> None:
         typer.echo(f"Inserted {collect_halts(s)} trading halts")
 
 
+@app.command("collect-prices")
+def collect_prices_command(
+    ticker: Annotated[str | None, typer.Option("--ticker")] = None,
+    period: Annotated[str, typer.Option("--period")] = "2y",
+    start: Annotated[str | None, typer.Option("--start")] = None,
+    end: Annotated[str | None, typer.Option("--end")] = None,
+) -> None:
+    create_db()
+    with session() as s:
+        count = collect_prices(s, ticker=ticker, period=period, start=start, end=end)
+        typer.echo(f"Inserted {count} prices")
+
+
 @app.command("collect-all")
 def collect_all() -> None:
     collect_sec()
     collect_macro()
     collect_halts_command()
+    collect_prices_command()
 
 
 @app.command("daily-brief")
