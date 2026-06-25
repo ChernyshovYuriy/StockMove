@@ -8,6 +8,42 @@ from sqlalchemy.orm import Session
 from market_info_layer.db.models import InsiderTransaction
 from market_info_layer.utils.time import utc_now_iso
 
+
+class Form4ParseError(ValueError):
+    """Raised when a Form 4 document is not parseable ownership XML."""
+
+
+def _looks_like_html(content: str) -> bool:
+    head = content.lstrip()[:500].lower()
+    return head.startswith("<!doctype html") or head.startswith("<html") or "<body" in head
+
+
+def _looks_like_sec_error_page(content: str) -> bool:
+    head = content.lstrip()[:4000].lower()
+    error_markers = (
+        "request rate threshold exceeded",
+        "sec.gov request rate threshold exceeded",
+        "your request rate has exceeded",
+        "access denied",
+        "temporarily unavailable",
+        "service unavailable",
+        "too many requests",
+    )
+    return any(marker in head for marker in error_markers)
+
+
+def _validate_form4_xml_shape(raw_xml: str) -> None:
+    if not raw_xml or not raw_xml.strip():
+        raise Form4ParseError("empty Form 4 document")
+    if _looks_like_html(raw_xml):
+        raise Form4ParseError("document is HTML, not raw Form 4 XML")
+    if _looks_like_sec_error_page(raw_xml):
+        raise Form4ParseError("SEC error or rate-limit response, not Form 4 XML")
+    lowered = raw_xml[:10000].lower()
+    if "<ownershipdocument" not in lowered:
+        raise Form4ParseError("document does not look like Form 4 ownership XML")
+
+
 CODE_TYPES = {
     "P": "Purchase",
     "S": "Sale",
@@ -77,7 +113,13 @@ class ParsedForm4Transaction:
 
 
 def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
-    root = ET.fromstring(raw_xml)
+    _validate_form4_xml_shape(raw_xml)
+    try:
+        root = ET.fromstring(raw_xml)
+    except ET.ParseError as exc:
+        raise Form4ParseError(f"malformed Form 4 XML: {exc}") from exc
+    if root.tag != "ownershipDocument":
+        raise Form4ParseError(f"unexpected Form 4 XML root: {root.tag}")
     ticker = _txt(root, "issuer/issuerTradingSymbol")
     owner = root.find("reportingOwner")
     owner_name = _txt(owner, "reportingOwnerId/rptOwnerName")
