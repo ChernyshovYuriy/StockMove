@@ -41,7 +41,7 @@ _BLOCK_TAGS = {
     "th",
     "tr",
 }
-_IGNORED_TAGS = {"script", "style"}
+_IGNORED_TAGS = {"script", "style", "meta", "head"}
 _XBRL_METADATA_PREFIXES = ("dei:", "link:", "xbrli:", "xbrldi:", "xlink:", "xsd:")
 _XBRL_METADATA_TAGS = {
     "context",
@@ -68,10 +68,16 @@ class _SecHtmlTextExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self._ignored_stack: list[str] = []
+        self._seen_body = False
+        self._has_body = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized = tag.lower()
-        if self._should_ignore_start(normalized, dict(attrs)):
+        attrs_dict = {name.lower(): value for name, value in attrs}
+        if normalized == "body":
+            self._seen_body = True
+            self._has_body = True
+        if self._should_ignore_start(normalized, attrs_dict):
             self._ignored_stack.append(normalized)
             return
         if normalized in _BLOCK_TAGS:
@@ -87,6 +93,8 @@ class _SecHtmlTextExtractor(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self._ignored_stack:
+            return
+        if self._has_body and not self._seen_body:
             return
         text = re.sub(r"\s+", " ", data).strip()
         if text:
@@ -111,7 +119,14 @@ class _SecHtmlTextExtractor(HTMLParser):
             return True
         hidden_attr = attrs.get("hidden")
         aria_hidden = (attrs.get("aria-hidden") or "").lower()
-        return hidden_attr is not None or aria_hidden == "true"
+        input_type = (attrs.get("type") or "").lower()
+        class_name = (attrs.get("class") or "").lower()
+        return (
+            hidden_attr is not None
+            or aria_hidden == "true"
+            or input_type == "hidden"
+            or "hidden" in class_name.split()
+        )
 
 
 class _PlainTextExtractor(HTMLParser):
@@ -159,12 +174,23 @@ def _dedupe_noise_lines(lines: list[str]) -> list[str]:
     return cleaned
 
 
+def _normalize_extracted_text(text: str) -> str:
+    text = re.sub(r"\b(?:true|false)(?:\s+(?:true|false)){1,}\b", " ", text, flags=re.I)
+    venue_pattern = "|".join(sorted(_TRADING_VENUES, key=len, reverse=True))
+    text = re.sub(rf"\b({venue_pattern})(?:\s+\1){{1,}}\b", " ", text, flags=re.I)
+    text = re.sub(r"\b[a-z][\w.-]*:[A-Za-z0-9_.-]+\b", " ", text)
+    text = re.sub(r"\b[A-Za-z][A-Za-z0-9]*(?:Member|Axis|Domain|Abstract)\b", " ", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
 def extract_text(content: str) -> str:
     parser = _SecHtmlTextExtractor() if _looks_like_html(content) else _PlainTextExtractor()
     parser.feed(content)
     extracted = "\n".join(" ".join(parser.parts).split("\n")) if parser.parts else content
-    lines = _dedupe_noise_lines(extracted.splitlines())
-    return re.sub(r"[ \t]+", " ", "\n".join(lines)).strip() or content
+    normalized = _normalize_extracted_text(extracted)
+    lines = _dedupe_noise_lines(normalized.splitlines())
+    return _normalize_extracted_text("\n".join(lines)) or content
 
 
 def download_filing_document(url: str) -> DownloadedFilingDocument:

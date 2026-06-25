@@ -24,23 +24,35 @@ ITEM_TYPES = {
 HIGH_DEFAULT_ITEMS = {"Item 2.05", "Item 2.06", "Item 3.01"}
 IMPORTANCE_RANK = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
 
-_HIGH_502_RE = re.compile(
+_HIGH_502_ROLE_RE = re.compile(
     r"\b(ceo|chief executive officer|cfo|chief financial officer|coo|chief operating officer|"
-    r"president|resign(?:ed|ation|s)?|depart(?:ure|ed|ing)?|terminat(?:e|ed|ion)|"
-    r"immediate(?:ly)?\s+effect(?:ive)?|effective\s+immediate(?:ly)?)\b",
+    r"president)\b",
+    re.I,
+)
+_HIGH_502_CHANGE_RE = re.compile(
+    r"\b(resign(?:ed|ation|s)?|depart(?:ure|ed|ing)?|terminat(?:e|ed|ion)|"
+    r"transition(?:ed|ing)?\s+(?:from|out of)?\s*(?:the\s+)?role|"
+    r"effective\s+immediate(?:ly)?|immediate(?:ly)?\s+effect(?:ive)?)\b",
     re.I,
 )
 _MEDIUM_502_RE = re.compile(
-    r"\b(appoint(?:ed|ment)?|named|promoted|elected)\b.*\b("
-    r"chief|officer|senior vice president|executive vice president|svp|evp|general counsel)\b|"
-    r"\b(chief|officer|senior vice president|executive vice president|svp|evp|general counsel)\b.*"
-    r"\b(appoint(?:ed|ment)?|named|promoted|elected)\b",
+    r"\b(general counsel|principal accounting officer)\b.*"
+    r"\b(transition|resign(?:ed|ation|s)?|depart(?:ure|ed|ing)?|appoint(?:ed|ment)?|named)\b|"
+    r"\b(transition|resign(?:ed|ation|s)?|depart(?:ure|ed|ing)?|appoint(?:ed|ment)?|named)\b.*"
+    r"\b(general counsel|principal accounting officer)\b|"
+    r"\b(senior officer|chief accounting officer|chief legal officer|chief operating officer|"
+    r"executive vice president|senior vice president|svp|evp)\b.*"
+    r"\b(appoint(?:ed|ment)?|named|promoted|elected|transition)\b|"
+    r"\b(appoint(?:ed|ment)?|named|promoted|elected|transition)\b.*"
+    r"\b(senior officer|chief accounting officer|chief legal officer|chief operating officer|"
+    r"executive vice president|senior vice president|svp|evp)\b",
     re.I,
 )
 _LOW_502_RE = re.compile(
-    r"\b(routine|annual meeting|director election|election of director|elected to the board|"
-    r"board of directors|compensation plan|equity incentive plan|stock option plan|"
-    r"committee update|committee assignment|committee membership)\b",
+    r"\b(employee stock plan|compensation plan|cash incentive plan|equity incentive plan|"
+    r"stock option plan|director appointment only|director appointment|appointed to the board|"
+    r"elected to the board|routine board update|committee update|committee assignment|"
+    r"committee membership|routine|annual meeting|director election|election of director)\b",
     re.I,
 )
 _HIGH_202_RE = re.compile(
@@ -97,15 +109,17 @@ def _clean_snippet(text: str, limit: int = 300) -> str:
 def _classify_item(sec_item: str, context: str, has_other_events: bool) -> tuple[str, str]:
     title = sec_item.replace("Item ", "")
     if sec_item == "Item 5.02":
-        if _HIGH_502_RE.search(context):
+        if _LOW_502_RE.search(context) and not _HIGH_502_ROLE_RE.search(context):
+            return "low", "Routine director, compensation plan, or committee update."
+        if _HIGH_502_ROLE_RE.search(context) and _HIGH_502_CHANGE_RE.search(context):
             return (
                 "high",
                 "Leadership change involving key executives, departure, or immediate effect.",
             )
-        if _LOW_502_RE.search(context):
-            return "low", "Routine director, compensation plan, or committee update."
         if _MEDIUM_502_RE.search(context):
             return "medium", "Senior officer appointment or role change."
+        if _LOW_502_RE.search(context):
+            return "low", "Routine director, compensation plan, or committee update."
         return "medium", "Director or officer change disclosed; review context."
     if sec_item == "Item 9.01":
         detail = (
