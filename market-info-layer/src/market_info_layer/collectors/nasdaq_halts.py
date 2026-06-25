@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import re
 import time
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 
@@ -24,6 +26,21 @@ RSS_ACCEPT_HEADER = "application/rss+xml, application/xml, text/xml, */*"
 RESPONSE_PREVIEW_CHARS = 500
 _LAST_FETCH_MONOTONIC: float | None = None
 logger = logging.getLogger(__name__)
+HALT_TIMEZONE = "America/New_York"
+HALT_REASON_TEXT = {
+    "LUDP": "Limit Up-Limit Down pause",
+    "T1": "Unknown/needs verification (Nasdaq halt code T1)",
+    "T2": "Unknown/needs verification (Nasdaq halt code T2)",
+    "T3": "Unknown/needs verification (Nasdaq halt code T3)",
+    "T5": "Unknown/needs verification (Nasdaq halt code T5)",
+    "T6": "Unknown/needs verification (Nasdaq halt code T6)",
+    "T8": "Unknown/needs verification (Nasdaq halt code T8)",
+    "T12": "Unknown/needs verification (Nasdaq halt code T12)",
+    "H10": "Unknown/needs verification (Nasdaq halt code H10)",
+    "H11": "Unknown/needs verification (Nasdaq halt code H11)",
+    "M": "Unknown/needs verification (Nasdaq halt code M)",
+    "D": "Unknown/needs verification (Nasdaq halt code D)",
+}
 
 
 class HaltFetchError(RuntimeError):
@@ -113,6 +130,65 @@ def _clean_text(value: str | None) -> str | None:
     return text or None
 
 
+def _parse_pub_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return parsedate_to_datetime(value).date().isoformat()
+    except (TypeError, ValueError, IndexError, AttributeError):
+        match = re.search(r"(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})", value)
+        if not match:
+            return None
+        token = match.group(1)
+        if "-" in token:
+            return token
+        month, day, year = token.split("/")
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
+def _split_halt_datetime(value: str | None, fallback_date: str) -> tuple[str, str | None]:
+    text = _clean_text(value)
+    if not text:
+        return fallback_date, None
+    date_match = re.search(r"(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{4})", text)
+    halt_date = _parse_pub_date(date_match.group(1)) if date_match else fallback_date
+    time_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?\s*(?:AM|PM)?)", text, re.I)
+    halt_time = time_match.group(1).strip() if time_match else text
+    return halt_date or fallback_date, halt_time
+
+
+def _build_datetime(halt_date: str | None, time_value: str | None) -> str | None:
+    if not halt_date or not time_value:
+        return None
+    return f"{halt_date}T{time_value} {HALT_TIMEZONE}"
+
+
+def _reason_text(reason_code: str | None, source_text: str | None) -> str | None:
+    cleaned = _clean_text(source_text)
+    if cleaned:
+        return cleaned
+    code = _clean_text(reason_code)
+    if not code:
+        return None
+    return HALT_REASON_TEXT.get(code.upper(), f"Unknown halt reason code: {code}")
+
+
+def _enrich_row(
+    row: dict[str, str | None], fallback_date: str | None = None
+) -> dict[str, str | None]:
+    fallback = fallback_date or datetime.now(UTC).date().isoformat()
+    halt_date, halt_time = _split_halt_datetime(row.get("halt_time"), fallback)
+    _, resume_time = _split_halt_datetime(row.get("resume_time"), halt_date)
+    row = dict(row)
+    row["halt_date"] = halt_date
+    row["halt_time"] = halt_time
+    row["resume_time"] = resume_time
+    row["timezone"] = HALT_TIMEZONE
+    row["halt_datetime"] = _build_datetime(halt_date, halt_time)
+    row["resume_datetime"] = _build_datetime(halt_date, resume_time)
+    row["reason_text"] = _reason_text(row.get("reason_code"), row.get("reason_text"))
+    return row
+
 def _preview_response(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()[:RESPONSE_PREVIEW_CHARS]
 
@@ -183,10 +259,14 @@ def _row_from_entry(entry, collected_at: str) -> dict[str, str | None] | None:
             logger.warning("Skipping unparseable Nasdaq halt table entry title=%r: %s", title, exc)
         else:
             if parsed_rows:
-                return parsed_rows[0] | {
-                    "source": NASDAQ_HALTS_RSS_URL,
-                    "collected_at": collected_at,
-                }
+                pub_date = _parse_pub_date(_entry_value(entry, "published", "updated"))
+                return _enrich_row(
+                    parsed_rows[0] | {
+                        "source": NASDAQ_HALTS_RSS_URL,
+                        "collected_at": collected_at,
+                    },
+                    pub_date or collected_at[:10],
+                )
 
     text_parts = [_description_text(description), title, _entry_value(entry, "links", "link") or ""]
     text = " | ".join(part for part in text_parts if part)
@@ -196,16 +276,22 @@ def _row_from_entry(entry, collected_at: str) -> dict[str, str | None] | None:
         ticker = _clean_text(ticker_match.group(1)) if ticker_match else None
     if not ticker:
         return None
-    return {
-        "ticker": ticker,
-        "halt_time": _labeled_value(text, "Halt Time", "Time")
-        or _entry_value(entry, "published", "updated"),
-        "resume_time": _labeled_value(text, "Resumption Trade Time", "Resume Time"),
-        "reason_code": _labeled_value(text, "Reason Code", "Code"),
-        "reason_text": _labeled_value(text, "Reason", "Reason Text"),
-        "source": NASDAQ_HALTS_RSS_URL,
-        "collected_at": collected_at,
-    }
+    pub_date = _parse_pub_date(_entry_value(entry, "published", "updated"))
+    # Nasdaq RSS often publishes halt times without dates; in that case use the
+    # item publication date, falling back to the collector date for historical keys.
+    return _enrich_row(
+        {
+            "ticker": ticker,
+            "halt_time": _labeled_value(text, "Halt Time", "Time")
+            or _entry_value(entry, "published", "updated"),
+            "resume_time": _labeled_value(text, "Resumption Trade Time", "Resume Time"),
+            "reason_code": _labeled_value(text, "Reason Code", "Code"),
+            "reason_text": _labeled_value(text, "Reason", "Reason Text"),
+            "source": NASDAQ_HALTS_RSS_URL,
+            "collected_at": collected_at,
+        },
+        pub_date or collected_at[:10],
+    )
 
 
 def parse_halts_rss(xml_text: str) -> list[dict[str, str | None]]:
@@ -254,16 +340,20 @@ def parse_halts_html(html: str) -> list[dict[str, str | None]]:
             ticker = str(row[symbol_col]).strip()
             if not ticker or ticker.lower() == "nan":
                 continue
+            collected_at = utc_now_iso()
             rows.append(
-                {
-                    "ticker": ticker,
-                    "halt_time": _cell(row, "Halt Time"),
-                    "resume_time": _cell(row, "Resumption Trade Time", "Resume Time"),
-                    "reason_code": _cell(row, "Reason Code"),
-                    "reason_text": _cell(row, "Reason"),
-                    "source": NASDAQ_HALTS_URL,
-                    "collected_at": utc_now_iso(),
-                }
+                _enrich_row(
+                    {
+                        "ticker": ticker,
+                        "halt_time": _cell(row, "Halt Time"),
+                        "resume_time": _cell(row, "Resumption Trade Time", "Resume Time"),
+                        "reason_code": _cell(row, "Reason Code"),
+                        "reason_text": _cell(row, "Reason"),
+                        "source": NASDAQ_HALTS_URL,
+                        "collected_at": collected_at,
+                    },
+                    collected_at[:10],
+                )
             )
         return rows
     raise HaltParseError("Nasdaq response did not contain expected symbol column")
@@ -274,7 +364,7 @@ def _halt_exists(session: Session, row: dict[str, str | None]) -> bool:
         session.scalar(
             select(TradingHalt.id).where(
                 TradingHalt.ticker == row["ticker"],
-                TradingHalt.halt_time == row["halt_time"],
+                TradingHalt.halt_datetime == row["halt_datetime"],
                 TradingHalt.reason_code == row["reason_code"],
             )
         )

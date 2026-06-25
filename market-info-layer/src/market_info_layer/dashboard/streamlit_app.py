@@ -176,7 +176,7 @@ with Session(get_engine()) as session:
             ticker = st.text_input("Ticker filter").upper().strip()
             if ticker:
                 df = df[df["ticker"] == ticker]
-            df = df.sort_values(by=["halt_time", "collected_at"], ascending=[False, False])
+            df = df.sort_values(by=["halt_datetime", "collected_at"], ascending=[False, False])
             st.dataframe(df, hide_index=True)
         else:
             st.info("No trading halts collected yet.")

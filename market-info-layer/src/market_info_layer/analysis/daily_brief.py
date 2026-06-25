@@ -146,6 +146,9 @@ def generate_daily_brief(
         select(Filing).where(Filing.filing_date == brief_date.isoformat())
     ).all()
     halts = [h for h in session.scalars(select(TradingHalt)).all() if h.ticker in tickers]
+    all_halts = session.scalars(
+        select(TradingHalt).order_by(TradingHalt.halt_datetime.desc())
+    ).all()
     macros = latest_macro_values(session)
     selected_events = _select_events(session, brief_date, lookback_days, processed_today)
     sorted_events = sorted(selected_events, key=_event_sort_key)
@@ -254,11 +257,21 @@ def generate_daily_brief(
         "## Trading Halts",
         "Known facts:",
         *(
-            f"- {h.ticker} halt={h.halt_time} resume={h.resume_time} "
-            f"reason={h.reason_code} {h.reason_text}"
+            f"- {h.halt_datetime} {h.ticker} reason_code={h.reason_code} "
+            f"reason_text={h.reason_text} resume={h.resume_datetime}"
             for h in halts
         ),
         *(["No trading halts recorded for watchlist tickers."] if not halts else []),
+        *(
+            ["", "### All collected trading halts (debug)"]
+            + [
+                f"- {h.halt_datetime} {h.ticker} reason_code={h.reason_code} "
+                f"reason_text={h.reason_text} resume={h.resume_datetime}"
+                for h in all_halts
+            ]
+            if style == "debug"
+            else []
+        ),
         "",
         "## Watchlist implications",
         "Known facts:",

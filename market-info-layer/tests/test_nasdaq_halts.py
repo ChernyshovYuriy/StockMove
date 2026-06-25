@@ -10,6 +10,7 @@ from market_info_layer.collectors.nasdaq_halts import (
 RSS_ONE = """<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Trade Halts</title><item>
 <title>Trade Halt - ABC</title>
+<pubDate>Tue, 02 Jan 2024 15:00:00 -0500</pubDate>
 <description><![CDATA[
 Issue Symbol: ABC | Halt Time: 2024-01-01 10:00:00 |
 Resume Time: 2024-01-01 10:30:00 | Reason Code: T1 | Reason: News pending
@@ -56,8 +57,12 @@ def test_parse_halts_rss_with_one_halt_entry():
     assert rows == [
         {
             "ticker": "ABC",
-            "halt_time": "2024-01-01 10:00:00",
-            "resume_time": "2024-01-01 10:30:00",
+            "halt_date": "2024-01-01",
+            "halt_time": "10:00:00",
+            "halt_datetime": "2024-01-01T10:00:00 America/New_York",
+            "resume_time": "10:30:00",
+            "resume_datetime": "2024-01-01T10:30:00 America/New_York",
+            "timezone": "America/New_York",
             "reason_code": "T1",
             "reason_text": "News pending",
             "source": "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts",
@@ -65,6 +70,33 @@ def test_parse_halts_rss_with_one_halt_entry():
         }
     ]
 
+
+
+def test_parse_halts_rss_publication_date_fallback_and_missing_resume():
+    rss = """<rss><channel><item>
+    <title>Trade Halt - XYZ</title><pubDate>Tue, 02 Jan 2024 15:00:00 -0500</pubDate>
+    <description>Issue Symbol: XYZ | Halt Time: 13:31:38.823 | Reason Code: LUDP</description>
+    </item></channel></rss>"""
+
+    row = parse_halts_rss(rss)[0]
+
+    assert row["halt_date"] == "2024-01-02"
+    assert row["halt_time"] == "13:31:38.823"
+    assert row["halt_datetime"] == "2024-01-02T13:31:38.823 America/New_York"
+    assert row["resume_time"] is None
+    assert row["resume_datetime"] is None
+    assert row["reason_text"] == "Limit Up-Limit Down pause"
+
+
+def test_parse_halts_rss_unknown_reason_code_text():
+    rss = """<rss><channel><item>
+    <title>Trade Halt - ZZZ</title><pubDate>Tue, 02 Jan 2024 15:00:00 -0500</pubDate>
+    <description>Issue Symbol: ZZZ | Halt Time: 13:31:38 | Reason Code: X99</description>
+    </item></channel></rss>"""
+
+    row = parse_halts_rss(rss)[0]
+
+    assert row["reason_text"] == "Unknown halt reason code: X99"
 
 def test_parse_halts_rss_empty_feed_returns_zero_rows():
     assert parse_halts_rss(RSS_EMPTY) == []

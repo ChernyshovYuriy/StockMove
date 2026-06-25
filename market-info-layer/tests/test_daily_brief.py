@@ -268,8 +268,12 @@ def test_daily_brief_includes_macro_context_and_trading_halts(tmp_path):
                 ),
                 TradingHalt(
                     ticker="AAPL",
-                    halt_time="2024-01-02 10:00",
-                    resume_time="2024-01-02 10:30",
+                    halt_date="2024-01-02",
+                    halt_time="10:00",
+                    halt_datetime="2024-01-02T10:00 America/New_York",
+                    timezone="America/New_York",
+                    resume_time="10:30",
+                    resume_datetime="2024-01-02T10:30 America/New_York",
                     reason_code="T1",
                     reason_text="News pending",
                     source="Nasdaq",
@@ -284,7 +288,7 @@ def test_daily_brief_includes_macro_context_and_trading_halts(tmp_path):
     assert "## Macro Context" in text
     assert "CPIAUCSL" in text
     assert "## Trading Halts" in text
-    assert "AAPL halt=2024-01-02 10:00" in text
+    assert "2024-01-02T10:00 America/New_York AAPL" in text
 
 
 def test_daily_brief_no_watchlist_trading_halts_message(tmp_path):
