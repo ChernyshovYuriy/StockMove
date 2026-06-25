@@ -126,3 +126,98 @@ def test_daily_brief_includes_parsed_filing_events(tmp_path):
         )
         assert "## Parsed filing events" in path.read_text()
         assert "ABC Item 8.01" in path.read_text()
+
+
+def test_form4_parser_rejects_malformed_xml():
+    from market_info_layer.analysis.form4_parser import Form4ParseError
+
+    try:
+        parse_form4_xml("<ownershipDocument><issuer></ownershipDocument>")
+    except Form4ParseError as exc:
+        assert "malformed Form 4 XML" in str(exc)
+    else:
+        raise AssertionError("malformed XML should raise Form4ParseError")
+
+
+def test_html_form4_response_does_not_crash_and_creates_review_event(monkeypatch, tmp_path):
+    with _session(tmp_path) as session:
+        filing = _filing("4", "0003")
+        session.add(filing)
+        session.commit()
+        monkeypatch.setattr(
+            sec_documents,
+            "download_filing_document",
+            lambda url: sec_documents.DownloadedFilingDocument(
+                "<html><body>SEC transformed document</body></html>",
+                url,
+                "text/html",
+                200,
+            ),
+        )
+
+        assert process_sec_filings(session, limit=10, form_type="4") == 1
+        event = session.query(FilingEvent).one()
+        assert event.event_type == "Unparseable Form 4"
+        assert event.needs_human_review is True
+        assert event.importance == "unknown"
+        assert "not raw Form 4 ownership XML" in event.summary
+        assert session.get(Filing, filing.id).processed is True
+
+
+def test_sec_rate_limit_form4_response_does_not_crash(monkeypatch, tmp_path):
+    with _session(tmp_path) as session:
+        filing = _filing("4", "0004")
+        session.add(filing)
+        session.commit()
+        monkeypatch.setattr(
+            sec_documents,
+            "download_filing_document",
+            lambda url: sec_documents.DownloadedFilingDocument(
+                "Request Rate Threshold Exceeded", url, "text/plain", 429
+            ),
+        )
+
+        assert process_sec_filings(session, limit=10, form_type="4") == 1
+        event = session.query(FilingEvent).one()
+        assert event.needs_human_review is True
+        assert "HTTP status 429" in event.summary
+        doc = session.query(FilingDocument).one()
+        assert doc.raw_text == "Request Rate Threshold Exceeded"
+        assert doc.http_status_code == 429
+
+
+def test_process_sec_filings_continues_after_bad_form4(monkeypatch, tmp_path):
+    with _session(tmp_path) as session:
+        bad = _filing("4", "0005")
+        bad.filing_url = "https://www.sec.gov/Archives/bad.xml"
+        good = _filing("4", "0006")
+        good.filing_url = "https://www.sec.gov/Archives/good.xml"
+        session.add_all([bad, good])
+        session.commit()
+
+        def fake_download(url):
+            if url.endswith("bad.xml"):
+                return "<ownershipDocument><issuer></ownershipDocument>"
+            return FORM4_XML
+
+        monkeypatch.setattr(sec_documents, "download_filing_document", fake_download)
+        assert process_sec_filings(session, limit=10, form_type="4") == 2
+        assert session.query(FilingEvent).filter_by(needs_human_review=True).count() == 1
+        assert session.query(InsiderTransaction).count() == 1
+        assert session.query(Filing).filter_by(processed=True).count() == 2
+
+
+def test_xslf345_primary_document_is_not_assumed_parseable(monkeypatch, tmp_path):
+    with _session(tmp_path) as session:
+        filing = _filing("4", "0007")
+        filing.primary_document = "xslF345X05/doc.xml"
+        session.add(filing)
+        session.commit()
+        monkeypatch.setattr(
+            sec_documents,
+            "download_filing_document",
+            lambda url: "<XML><notOwnershipDocument /></XML>",
+        )
+
+        assert process_sec_filings(session, limit=10, form_type="4") == 1
+        assert session.query(FilingEvent).one().needs_human_review is True
