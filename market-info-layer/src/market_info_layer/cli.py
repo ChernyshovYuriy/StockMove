@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+from typing import Annotated
 
 import typer
 import yaml
@@ -13,6 +14,7 @@ from market_info_layer.collectors.sec_edgar import collect_sec_filings
 from market_info_layer.db.database import get_engine
 from market_info_layer.db.database import init_db as create_db
 from market_info_layer.db.models import Ticker, Watchlist
+from market_info_layer.debug_export import create_debug_export
 from market_info_layer.settings import ROOT_DIR
 from market_info_layer.utils.time import utc_now_iso
 
@@ -112,6 +114,26 @@ def daily_brief() -> None:
     create_db()
     with session() as s:
         typer.echo(generate_daily_brief(s))
+
+
+@app.command("export-debug")
+def export_debug(
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = ROOT_DIR / "export",
+    include_db: Annotated[bool, typer.Option("--include-db")] = False,
+    include_raw_documents: Annotated[bool, typer.Option("--include-raw-documents")] = False,
+    limit_rows_per_table: Annotated[int, typer.Option("--limit-rows-per-table", min=1)] = 10_000,
+) -> None:
+    try:
+        zip_path = create_debug_export(
+            output_dir=output_dir,
+            include_db=include_db,
+            include_raw_documents=include_raw_documents,
+            limit_rows_per_table=limit_rows_per_table,
+        )
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(zip_path)
 
 
 @app.command("dashboard")
