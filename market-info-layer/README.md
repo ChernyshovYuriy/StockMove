@@ -11,7 +11,7 @@ This project is for research and journaling only. It is not financial advice and
 - Collects deterministic SEC EDGAR filing metadata for watchlist tickers.
 - Collects configured FRED macro observations.
 - Collects current Nasdaq trading halt data defensively.
-- Generates a daily Markdown brief.
+- Generates a daily Markdown brief, with optional backfill/review modes for recently processed filings.
 - Provides a local Streamlit dashboard for review and manual notes.
 - Keeps raw facts separate from interpretation and placeholders for optional future AI analysis.
 
@@ -54,8 +54,24 @@ python -m market_info_layer.cli collect-macro
 python -m market_info_layer.cli collect-halts
 python -m market_info_layer.cli collect-all
 python -m market_info_layer.cli daily-brief
+python -m market_info_layer.cli daily-brief --lookback-days 90
+python -m market_info_layer.cli daily-brief --processed-today --include-low
+python -m market_info_layer.cli backfill-review
 python -m market_info_layer.cli dashboard
 ```
+
+## Report generation
+
+Daily briefs default to true daily production behavior: parsed filing events are included when their `event_date` equals the report date. During initial SEC backfills or review sessions, use lookback or processed-date options to surface older filing events that were parsed today.
+
+```bash
+python -m market_info_layer.cli daily-brief
+python -m market_info_layer.cli daily-brief --lookback-days 90
+python -m market_info_layer.cli daily-brief --processed-today --include-low
+python -m market_info_layer.cli backfill-review
+```
+
+Use `--date YYYY-MM-DD` to choose the report date and `--output-name TEXT` to write a custom Markdown filename under the daily reports directory. Low-importance parsed filing events are separated by default; pass `--include-low` to include them in the main parsed-events section.
 
 ## Configuration
 
