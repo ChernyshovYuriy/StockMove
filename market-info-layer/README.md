@@ -54,8 +54,9 @@ python -m market_info_layer.cli collect-macro
 python -m market_info_layer.cli collect-halts
 python -m market_info_layer.cli collect-all
 python -m market_info_layer.cli daily-brief
-python -m market_info_layer.cli daily-brief --lookback-days 90
-python -m market_info_layer.cli daily-brief --processed-today --include-low
+python -m market_info_layer.cli daily-brief --lookback-days 90 --style compact
+python -m market_info_layer.cli daily-brief --processed-today --include-low --style debug
+python -m market_info_layer.cli daily-brief --max-unprocessed 5
 python -m market_info_layer.cli backfill-review
 python -m market_info_layer.cli dashboard
 ```
@@ -66,12 +67,13 @@ Daily briefs default to true daily production behavior: parsed filing events are
 
 ```bash
 python -m market_info_layer.cli daily-brief
-python -m market_info_layer.cli daily-brief --lookback-days 90
-python -m market_info_layer.cli daily-brief --processed-today --include-low
+python -m market_info_layer.cli daily-brief --lookback-days 90 --style compact
+python -m market_info_layer.cli daily-brief --processed-today --include-low --style debug
+python -m market_info_layer.cli daily-brief --max-unprocessed 5
 python -m market_info_layer.cli backfill-review
 ```
 
-Use `--date YYYY-MM-DD` to choose the report date and `--output-name TEXT` to write a custom Markdown filename under the daily reports directory. Low-importance parsed filing events are separated by default; pass `--include-low` to include them in the main parsed-events section.
+Use `--date YYYY-MM-DD` to choose the report date and `--output-name TEXT` to write a custom Markdown filename under the daily reports directory. Daily briefs default to `--style compact`, which emits short parsed-event blocks with importance, ticker, event date, SEC item, event type, a summary capped at 240 characters, and the source URL. Use `--style debug` for the verbose field-rich event format. Low-importance parsed filing events are separated by default in compact reports, and Item 9.01 exhibit-only events are hidden unless `--include-low` is passed. Unprocessed material filings are limited to 10 by default; use `--max-unprocessed INTEGER` to adjust the review list length.
 
 ## Configuration
 

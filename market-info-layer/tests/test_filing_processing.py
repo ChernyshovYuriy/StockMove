@@ -167,7 +167,7 @@ def test_daily_brief_includes_parsed_filing_events(tmp_path):
             session, output_dir=tmp_path, brief_date=__import__("datetime").date(2026, 6, 20)
         )
         assert "## Parsed filing events" in path.read_text()
-        assert "ABC Item 8.01" in path.read_text()
+        assert "[medium] ABC — 2026-06-20 — Item 8.01" in path.read_text()
 
 
 def test_form4_parser_rejects_malformed_xml():

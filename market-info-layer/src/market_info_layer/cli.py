@@ -1,13 +1,13 @@
 import subprocess
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 import yaml
 from sqlalchemy.orm import Session
 
-from market_info_layer.analysis.daily_brief import generate_daily_brief
+from market_info_layer.analysis.daily_brief import DEFAULT_MAX_UNPROCESSED, generate_daily_brief
 from market_info_layer.collectors.fred_macro import collect_macro_observations
 from market_info_layer.collectors.nasdaq_halts import collect_halts
 from market_info_layer.collectors.sec_documents import process_sec_filings
@@ -117,6 +117,10 @@ def daily_brief(
     processed_today: Annotated[bool, typer.Option("--processed-today")] = False,
     include_low: Annotated[bool, typer.Option("--include-low")] = False,
     output_name: Annotated[str | None, typer.Option("--output-name")] = None,
+    style: Annotated[Literal["compact", "debug"], typer.Option("--style")] = "compact",
+    max_unprocessed: Annotated[
+        int, typer.Option("--max-unprocessed", min=0)
+    ] = DEFAULT_MAX_UNPROCESSED,
 ) -> None:
     create_db()
     parsed_date = date.fromisoformat(brief_date) if brief_date else None
@@ -129,6 +133,8 @@ def daily_brief(
                 processed_today=processed_today,
                 include_low=include_low,
                 output_name=output_name,
+                style=style,
+                max_unprocessed=max_unprocessed,
             )
         )
 

@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,6 +18,8 @@ from market_info_layer.settings import ROOT_DIR
 
 MATERIAL_FILING_TYPES = {"8-K", "10-Q", "10-K", "S-1", "424B", "SC 13D", "SC 13G", "DEF 14A"}
 IMPORTANCE_RANK = {"high": 0, "medium": 1, "low": 2, "unknown": 3, None: 4}
+ReportStyle = Literal["compact", "debug"]
+DEFAULT_MAX_UNPROCESSED = 10
 
 
 def _iso_date(value: str | None) -> date | None:
@@ -36,7 +39,19 @@ def _event_sort_key(event: FilingEvent) -> tuple[int, int, str]:
     return (IMPORTANCE_RANK.get(event.importance, 4), -event_ordinal, event.ticker)
 
 
-def _format_event(event: FilingEvent) -> str:
+def _truncate(value: str, max_chars: int) -> str:
+    text = " ".join(value.split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _event_summary(event: FilingEvent) -> str:
+    summary_parts = [part for part in (event.headline, event.summary) if part]
+    return _truncate(". ".join(summary_parts) if summary_parts else "No summary available.", 240)
+
+
+def _format_event_debug(event: FilingEvent) -> str:
     return (
         f"- [{event.importance or 'unknown'}] {event.ticker} {event.sec_item or event.form_type}: "
         f"event_date={event.event_date or 'unknown'} form_type={event.form_type} "
@@ -44,6 +59,26 @@ def _format_event(event: FilingEvent) -> str:
         f"needs_human_review={event.needs_human_review}: "
         f"{event.headline or 'No headline'}. {event.summary or ''} Source: {event.source_url}"
     )
+
+
+def _format_event_compact(event: FilingEvent) -> str:
+    return (
+        f"[{event.importance or 'unknown'}] {event.ticker} — "
+        f"{event.event_date or 'unknown'} — {event.sec_item or event.form_type or 'n/a'}\n"
+        f"Event: {event.event_type or 'n/a'}\n"
+        f"Summary: {_event_summary(event)}\n"
+        f"Source: {event.source_url}"
+    )
+
+
+def _format_event(event: FilingEvent, style: ReportStyle) -> str:
+    if style == "debug":
+        return _format_event_debug(event)
+    return _format_event_compact(event)
+
+
+def _is_item_901(event: FilingEvent) -> bool:
+    return (event.sec_item or "").strip().lower() == "item 9.01"
 
 
 def _select_events(
@@ -85,7 +120,13 @@ def generate_daily_brief(
     processed_today: bool = False,
     include_low: bool = False,
     output_name: str | None = None,
+    style: ReportStyle = "compact",
+    max_unprocessed: int = DEFAULT_MAX_UNPROCESSED,
 ) -> Path:
+    if style not in ("compact", "debug"):
+        raise ValueError("style must be compact or debug")
+    if max_unprocessed < 0:
+        raise ValueError("max_unprocessed must be non-negative")
     brief_date = brief_date or datetime.now(UTC).date()
     output_dir = output_dir or ROOT_DIR / "reports" / "daily"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -100,9 +141,12 @@ def generate_daily_brief(
     ).all()
     selected_events = _select_events(session, brief_date, lookback_days, processed_today)
     sorted_events = sorted(selected_events, key=_event_sort_key)
-    material_events = [e for e in sorted_events if include_low or e.importance != "low"]
-    low_events = [] if include_low else [e for e in sorted_events if e.importance == "low"]
-    processed_events = sorted_events if processed_today else []
+    visible_events = [
+        e for e in sorted_events if style == "debug" or include_low or not _is_item_901(e)
+    ]
+    material_events = [e for e in visible_events if include_low or e.importance != "low"]
+    low_events = [] if include_low else [e for e in visible_events if e.importance == "low"]
+    processed_events = visible_events if processed_today else []
     insiders = session.scalars(
         select(InsiderTransaction).where(InsiderTransaction.importance.in_(["high", "medium"]))
     ).all()
@@ -110,8 +154,10 @@ def generate_daily_brief(
         select(Filing)
         .where(Filing.processed.is_(False), Filing.form_type.in_(MATERIAL_FILING_TYPES))
         .order_by(Filing.filing_date.desc(), Filing.id.desc())
-        .limit(20)
+        .limit(max_unprocessed + 1)
     ).all()
+    unprocessed_more_count = max(0, len(review_filings) - max_unprocessed)
+    review_filings = review_filings[:max_unprocessed]
     selection_text = f"event_date={brief_date.isoformat()}"
     if lookback_days is not None:
         selection_text = (
@@ -124,6 +170,7 @@ def generate_daily_brief(
         "# Market Information Layer Daily Brief",
         "",
         f"Date: {brief_date.isoformat()}",
+        f"Report style: {style}",
         f"Parsed filing event selection: {selection_text}",
         "",
         "## Known facts",
@@ -133,15 +180,15 @@ def generate_daily_brief(
         "Speculation: None.",
         "",
         "## Parsed filing events",
-        *(_format_event(e) for e in material_events),
+        *(_format_event(e, style) for e in material_events),
         *(["- No parsed filing events for this selection."] if not material_events else []),
         "",
         "## Low-importance parsed filing events",
-        *(_format_event(e) for e in low_events),
+        *(_format_event(e, style) for e in low_events),
         *(["- No low-importance parsed filing events."] if not low_events else []),
         "",
         "## Recently processed filing events",
-        *(_format_event(e) for e in processed_events),
+        *(_format_event(e, style) for e in processed_events),
         *(
             ["- Not requested. Use --processed-today to populate this section."]
             if not processed_today
@@ -166,6 +213,14 @@ def generate_daily_brief(
             for f in review_filings
         ),
         *(["- No unprocessed material filings found."] if not review_filings else []),
+        *(
+            [
+                f"- {unprocessed_more_count} more unprocessed material filings not shown. "
+                "Use --max-unprocessed to adjust."
+            ]
+            if unprocessed_more_count
+            else []
+        ),
         "",
         "## Needs human review",
         *(
@@ -174,6 +229,14 @@ def generate_daily_brief(
             for f in review_filings
         ),
         *(["- No unprocessed material filings found."] if not review_filings else []),
+        *(
+            [
+                f"- {unprocessed_more_count} more unprocessed material filings not shown. "
+                "Use --max-unprocessed to adjust."
+            ]
+            if unprocessed_more_count
+            else []
+        ),
         "",
         "## New SEC filings for watchlist tickers",
         "Known facts:",
