@@ -150,6 +150,7 @@ class Price(Base):
     low: Mapped[float | None] = mapped_column(Float)
     close: Mapped[float | None] = mapped_column(Float)
     volume: Mapped[int | None] = mapped_column(Integer)
+    is_complete: Mapped[bool] = mapped_column(Boolean, default=True)
     source: Mapped[str] = mapped_column(String)
     collected_at: Mapped[str] = mapped_column(String)
     __table_args__ = (UniqueConstraint("ticker", "price_date", "source", name="uq_price"),)

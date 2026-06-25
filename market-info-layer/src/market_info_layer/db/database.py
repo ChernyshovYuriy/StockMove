@@ -22,6 +22,7 @@ def init_db(database_url: str | None = None) -> None:
     engine = get_engine(database_url)
     Base.metadata.create_all(engine)
     _ensure_trading_halt_columns(engine)
+    _ensure_price_columns(engine)
 
 
 def _ensure_trading_halt_columns(engine) -> None:
@@ -49,3 +50,15 @@ def get_session(database_url: str | None = None) -> Generator[Session, None, Non
     factory = sessionmaker(bind=get_engine(database_url), expire_on_commit=False, future=True)
     with factory() as session:
         yield session
+
+
+def _ensure_price_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "prices" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("prices")}
+    if "is_complete" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE prices ADD COLUMN is_complete BOOLEAN DEFAULT 1"))
+        conn.execute(text("UPDATE prices SET is_complete = 1 WHERE is_complete IS NULL"))

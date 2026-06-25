@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from market_info_layer.db.models import Price, Watchlist
 from market_info_layer.utils.time import utc_now_iso
+
+US_MARKET_TIMEZONE = ZoneInfo("America/New_York")
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,14 @@ def _watchlist_tickers(session: Session) -> list[str]:
     ]
 
 
+def _us_trading_today() -> date:
+    return datetime.now(US_MARKET_TIMEZONE).date()
+
+
+def _bar_complete(price_date: str, today: date) -> bool:
+    return date.fromisoformat(price_date) < today
+
+
 def collect_prices(
     session: Session,
     *,
@@ -111,13 +123,19 @@ def collect_prices(
     period: str = "2y",
     start: str | None = None,
     end: str | None = None,
+    include_current_day: bool = False,
 ) -> int:
     provider = provider or YFinancePriceProvider()
     tickers = [ticker.upper()] if ticker else _watchlist_tickers(session)
     inserted = 0
     collected_at = utc_now_iso()
+    today = _us_trading_today()
     for symbol in tickers:
         for bar in provider.daily_prices(symbol, period=period, start=start, end=end):
+            bar_date = date.fromisoformat(bar.price_date)
+            if bar_date >= today and not include_current_day:
+                continue
+            is_complete = _bar_complete(bar.price_date, today)
             stmt = sqlite_insert(Price).values(
                 ticker=bar.ticker.upper(),
                 price_date=bar.price_date,
@@ -126,6 +144,7 @@ def collect_prices(
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
+                is_complete=is_complete,
                 source=bar.source,
                 collected_at=collected_at,
             )

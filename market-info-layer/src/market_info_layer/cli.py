@@ -110,10 +110,18 @@ def collect_prices_command(
     period: Annotated[str, typer.Option("--period")] = "2y",
     start: Annotated[str | None, typer.Option("--start")] = None,
     end: Annotated[str | None, typer.Option("--end")] = None,
+    include_current_day: Annotated[bool, typer.Option("--include-current-day")] = False,
 ) -> None:
     create_db()
     with session() as s:
-        count = collect_prices(s, ticker=ticker, period=period, start=start, end=end)
+        count = collect_prices(
+            s,
+            ticker=ticker,
+            period=period,
+            start=start,
+            end=end,
+            include_current_day=include_current_day,
+        )
         typer.echo(f"Inserted {count} prices")
 
 
@@ -136,6 +144,7 @@ def daily_brief(
     max_unprocessed: Annotated[
         int, typer.Option("--max-unprocessed", min=0)
     ] = DEFAULT_MAX_UNPROCESSED,
+    debug_price_context: Annotated[bool, typer.Option("--debug-price-context")] = False,
 ) -> None:
     create_db()
     parsed_date = date.fromisoformat(brief_date) if brief_date else None
@@ -150,6 +159,7 @@ def daily_brief(
                 output_name=output_name,
                 style=style,
                 max_unprocessed=max_unprocessed,
+                debug_price_context=debug_price_context,
             )
         )
 

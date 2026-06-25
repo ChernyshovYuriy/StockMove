@@ -20,6 +20,7 @@ class EventPriceReaction:
     volume_event: int | None
     avg_volume_20d: float | None
     volume_ratio: float | None
+    status: str = "ok"
 
 
 def _parse_date(value: str | date) -> date:
@@ -38,7 +39,7 @@ def _pct(start: float | None, end: float | None) -> float | None:
 
 
 def event_price_reaction(
-    session: Session, ticker: str, event_date: str | date
+    session: Session, ticker: str, event_date: str | date, *, complete_only: bool = True
 ) -> EventPriceReaction:
     """Return conservative price/volume context around an event date."""
 
@@ -46,11 +47,23 @@ def event_price_reaction(
     rows = session.scalars(
         select(Price)
         .where(Price.ticker == ticker.upper())
+        .where(Price.is_complete.is_(True) if complete_only else True)
         .order_by(Price.price_date.asc(), Price.source.asc())
     ).all()
-    rows = [row for row in rows if row.close is not None]
+    complete_rows = [row for row in rows if row.close is not None]
+    all_rows = session.scalars(
+        select(Price)
+        .where(Price.ticker == ticker.upper())
+        .order_by(Price.price_date.asc(), Price.source.asc())
+    ).all()
+    incomplete_after_event = any(
+        not row.is_complete and row.close is not None and _parse_date(row.price_date) >= parsed_date
+        for row in all_rows
+    )
+    rows = complete_rows
     if not rows:
-        return EventPriceReaction(None, None, None, None, None, None, None, None, None)
+        status = "incomplete_price_window" if incomplete_after_event else "missing_price_data"
+        return EventPriceReaction(None, None, None, None, None, None, None, None, None, status)
 
     dates = [_parse_date(row.price_date) for row in rows]
     before = [i for i, row_date in enumerate(dates) if row_date < parsed_date]
@@ -80,6 +93,11 @@ def event_price_reaction(
         if volume_event is not None and avg_volume_20d not in (None, 0)
         else None
     )
+    status = "ok"
+    if close_event_or_next is None:
+        status = "incomplete_price_window" if incomplete_after_event else "missing_price_data"
+    elif close_plus_1 is None or close_plus_5 is None:
+        status = "incomplete_price_window" if incomplete_after_event else "missing_price_data"
     return EventPriceReaction(
         close_prev=close_prev,
         close_event_or_next=close_event_or_next,
@@ -90,4 +108,5 @@ def event_price_reaction(
         volume_event=volume_event,
         avg_volume_20d=avg_volume_20d,
         volume_ratio=volume_ratio,
+        status=status,
     )

@@ -360,6 +360,21 @@ def _health_checks(
                 "FROM prices GROUP BY ticker ORDER BY ticker"
             )
         ]
+    if _has(tables, columns, "prices", "ticker", "price_date", "is_complete"):
+        checks["latest_dates"]["latest_complete_price_date_by_ticker"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT ticker, MAX(price_date) AS latest_complete_price_date "
+                "FROM prices WHERE is_complete = 1 GROUP BY ticker ORDER BY ticker"
+            )
+        ]
+        checks["counts"]["incomplete_prices_by_ticker"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT ticker, COUNT(*) AS count FROM prices "
+                "WHERE is_complete = 0 GROUP BY ticker ORDER BY ticker"
+            )
+        ]
     if _has(tables, columns, "prices", "ticker", "price_date", "source"):
         checks["duplicates"]["prices_by_ticker_price_date_source"] = [
             dict(r)

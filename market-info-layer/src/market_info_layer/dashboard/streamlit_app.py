@@ -3,7 +3,7 @@ import streamlit as st
 from sqlalchemy.orm import Session
 
 from market_info_layer.collectors.fred_macro import latest_macro_values
-from market_info_layer.dashboard.dataframes import dashboard_rows
+from market_info_layer.dashboard.dataframes import dashboard_rows, price_summary_rows
 from market_info_layer.db.database import get_engine, init_db
 from market_info_layer.db.models import (
     DailyNote,
@@ -181,10 +181,9 @@ with Session(get_engine()) as session:
             if ticker:
                 df = df[df["ticker"] == ticker]
             df = df.sort_values(by=["ticker", "price_date"], ascending=[True, False])
-            st.subheader("Latest price by ticker")
-            latest = df.sort_values("price_date").groupby("ticker", as_index=False).tail(1)
+            st.subheader("Latest complete price by ticker")
             st.dataframe(
-                latest[["ticker", "price_date", "close", "volume", "source"]],
+                pd.DataFrame(price_summary_rows(session)),
                 hide_index=True,
             )
             st.subheader("Close price chart")
@@ -200,7 +199,19 @@ with Session(get_engine()) as session:
                 st.bar_chart(chart_df, x="price_date", y="volume", color="ticker")
             st.subheader("Historical OHLCV")
             st.dataframe(
-                df[["ticker", "price_date", "open", "high", "low", "close", "volume", "source"]],
+                df[
+                    [
+                        "ticker",
+                        "price_date",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "is_complete",
+                        "source",
+                    ]
+                ],
                 hide_index=True,
             )
     elif page == "Trading halts":
