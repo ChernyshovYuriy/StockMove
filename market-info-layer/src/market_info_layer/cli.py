@@ -1,4 +1,5 @@
 import subprocess
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
@@ -110,10 +111,46 @@ def collect_all() -> None:
 
 
 @app.command("daily-brief")
-def daily_brief() -> None:
+def daily_brief(
+    brief_date: Annotated[str | None, typer.Option("--date")] = None,
+    lookback_days: Annotated[int | None, typer.Option("--lookback-days", min=0)] = None,
+    processed_today: Annotated[bool, typer.Option("--processed-today")] = False,
+    include_low: Annotated[bool, typer.Option("--include-low")] = False,
+    output_name: Annotated[str | None, typer.Option("--output-name")] = None,
+) -> None:
     create_db()
+    parsed_date = date.fromisoformat(brief_date) if brief_date else None
     with session() as s:
-        typer.echo(generate_daily_brief(s))
+        typer.echo(
+            generate_daily_brief(
+                s,
+                brief_date=parsed_date,
+                lookback_days=lookback_days,
+                processed_today=processed_today,
+                include_low=include_low,
+                output_name=output_name,
+            )
+        )
+
+
+@app.command("backfill-review")
+def backfill_review(
+    brief_date: Annotated[str | None, typer.Option("--date")] = None,
+    include_low: Annotated[bool, typer.Option("--include-low")] = True,
+    output_name: Annotated[str | None, typer.Option("--output-name")] = "backfill-review",
+) -> None:
+    create_db()
+    parsed_date = date.fromisoformat(brief_date) if brief_date else None
+    with session() as s:
+        typer.echo(
+            generate_daily_brief(
+                s,
+                brief_date=parsed_date,
+                processed_today=True,
+                include_low=include_low,
+                output_name=output_name,
+            )
+        )
 
 
 @app.command("export-debug")
