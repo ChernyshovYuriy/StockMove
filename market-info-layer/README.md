@@ -121,7 +121,15 @@ python -m market_info_layer.cli process-sec-filings --form-type 4 --limit 20
 python -m market_info_layer.cli process-sec-filings --form-type 8-K --limit 20
 ```
 
-The processor preserves the original `filings` rows, downloads each primary SEC document once into `filing_documents`, and stores interpreted data separately in `insider_transactions` and `filing_events`. All downloaded and parsed rows retain the SEC source URL and source `filing_id`.
+The processor preserves the original `filings` rows, downloads each primary SEC document once into `filing_documents`, and stores interpreted data separately in `insider_transactions` and `filing_events`. All downloaded and parsed rows retain the SEC source URL and source `filing_id`. HTML filings also keep the exact downloaded HTML in `filing_documents.raw_html` for audit review, while `filing_documents.raw_text` contains cleaned visible text with inline-XBRL metadata stripped.
+
+To regenerate filing documents and parsed events after text-extraction changes, reset the derived SEC document tables and processing flag, then rerun the processor:
+
+```sql
+DELETE FROM filing_documents;
+DELETE FROM filing_events;
+UPDATE filings SET processed = 0;
+```
 
 ## Debug export
 
