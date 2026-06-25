@@ -62,6 +62,48 @@ def test_8k_parser_with_mocked_html_text():
     )
     assert rows[0]["sec_item"] == "Item 5.02"
     assert rows[0]["event_type"] == "Departure/election of directors or officers"
+    assert rows[0]["importance"] == "high"
+
+
+def test_8k_ceo_resignation_is_high():
+    rows = parse_8k_items("Item 5.02 CEO resignation effective immediately.")
+    assert rows[0]["importance"] == "high"
+    assert "Leadership change" in rows[0]["summary"]
+
+
+def test_8k_routine_director_election_is_not_high():
+    rows = parse_8k_items(
+        "Item 5.02 At the annual meeting, shareholders approved a routine director election "
+        "and committee membership update."
+    )
+    assert rows[0]["importance"] == "low"
+
+
+def test_8k_item_901_is_low_supporting_exhibits():
+    rows = parse_8k_items(
+        "Item 2.02 Results of Operations and Financial Condition. The company reported "
+        "quarterly results. Item 9.01 Financial Statements and Exhibits. Exhibit 99.1 is "
+        "furnished herewith."
+    )
+    item_901 = [row for row in rows if row["sec_item"] == "Item 9.01"][0]
+    assert item_901["importance"] == "low"
+    assert "Supporting exhibit information" in item_901["summary"]
+
+
+def test_8k_item_202_with_guidance_is_high():
+    rows = parse_8k_items(
+        "Item 2.02 Results of Operations and Financial Condition. The company updated "
+        "full-year guidance and outlook."
+    )
+    assert rows[0]["importance"] == "high"
+
+
+def test_8k_item_507_annual_meeting_vote_is_low():
+    rows = parse_8k_items(
+        "Item 5.07 Submission of Matters to a Vote of Security Holders. At the annual "
+        "meeting, shareholders voted on director elections and ratified auditors."
+    )
+    assert rows[0]["importance"] == "low"
 
 
 def test_document_downloader_does_not_redownload_existing(monkeypatch, tmp_path):
