@@ -133,7 +133,7 @@ After collecting SEC filing metadata with `collect-sec`, parse selected filing d
 
 ```bash
 python -m market_info_layer.cli process-sec-filings --limit 50
-python -m market_info_layer.cli process-sec-filings --form-type 4 --limit 20
+python -m market_info_layer.cli process-sec-filings --form-type 4 --limit 50
 python -m market_info_layer.cli process-sec-filings --form-type 8-K --limit 20
 ```
 

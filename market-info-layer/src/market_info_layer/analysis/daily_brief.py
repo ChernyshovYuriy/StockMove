@@ -217,8 +217,11 @@ def generate_daily_brief(
     material_events = [e for e in visible_events if include_low or e.importance != "low"]
     low_events = [] if include_low else [e for e in visible_events if e.importance == "low"]
     processed_events = visible_events if processed_today else []
+    insider_importance = ["high", "medium", "low"] if include_low else ["high", "medium"]
     insiders = session.scalars(
-        select(InsiderTransaction).where(InsiderTransaction.importance.in_(["high", "medium"]))
+        select(InsiderTransaction)
+        .where(InsiderTransaction.importance.in_(insider_importance))
+        .order_by(InsiderTransaction.transaction_date.desc(), InsiderTransaction.id.desc())
     ).all()
     review_filings = session.scalars(
         select(Filing)

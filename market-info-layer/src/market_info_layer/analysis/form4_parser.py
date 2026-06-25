@@ -51,6 +51,7 @@ CODE_TYPES = {
     "M": "Option exercise/conversion",
     "F": "Tax withholding/payment",
     "G": "Gift",
+    "D": "Disposition to issuer",
 }
 
 
@@ -85,14 +86,13 @@ def _role(owner: ET.Element | None) -> str | None:
     return ", ".join(roles) if roles else None
 
 
-def classify_transaction(code: str | None, shares: float | None) -> str:
+def classify_transaction(code: str | None, shares: float | None = None) -> str:
+    del shares
     if code == "P":
         return "high"
     if code == "S":
-        return "high" if (shares or 0) >= 100_000 else "medium"
-    if code == "M":
         return "medium"
-    if code in {"A", "F", "G"}:
+    if code in {"A", "F", "M", "G", "D"}:
         return "low"
     return "unknown"
 
@@ -125,7 +125,11 @@ def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
     owner_name = _txt(owner, "reportingOwnerId/rptOwnerName")
     owner_role = _role(owner)
     parsed: list[ParsedForm4Transaction] = []
-    for txn in root.findall(".//nonDerivativeTransaction"):
+    transaction_nodes = [
+        *root.findall(".//nonDerivativeTransaction"),
+        *root.findall(".//derivativeTransaction"),
+    ]
+    for txn in transaction_nodes:
         code = _txt(txn, "transactionCoding/transactionCode")
         shares = _num(_txt(txn, "transactionAmounts/transactionShares/value"))
         parsed.append(
@@ -135,7 +139,7 @@ def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
                 owner_role,
                 _txt(txn, "transactionDate/value"),
                 code,
-                CODE_TYPES.get(code or "", "Unknown"),
+                CODE_TYPES.get(code or "", f"Unknown transaction code: {code or ''}"),
                 shares,
                 _num(_txt(txn, "transactionAmounts/transactionPricePerShare/value")),
                 _txt(txn, "ownershipNature/directOrIndirectOwnership/value"),
@@ -146,6 +150,27 @@ def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
     return parsed
 
 
+def _transaction_exists(
+    session: Session, filing_id: int, row: ParsedForm4Transaction, source_url: str
+) -> bool:
+    return (
+        session.query(InsiderTransaction.id)
+        .filter_by(
+            filing_id=filing_id,
+            owner_name=row.owner_name,
+            transaction_date=row.transaction_date,
+            transaction_code=row.transaction_code,
+            shares=row.shares,
+            price=row.price,
+            direct_or_indirect=row.direct_or_indirect,
+            shares_owned_after=row.shares_owned_after,
+            source_url=source_url,
+        )
+        .first()
+        is not None
+    )
+
+
 def store_form4_transactions(
     session: Session,
     filing_id: int,
@@ -154,7 +179,10 @@ def store_form4_transactions(
     fallback_ticker: str | None = None,
 ) -> int:
     rows = parse_form4_xml(raw_xml)
+    inserted = 0
     for row in rows:
+        if _transaction_exists(session, filing_id, row, source_url):
+            continue
         session.add(
             InsiderTransaction(
                 filing_id=filing_id,
@@ -173,4 +201,5 @@ def store_form4_transactions(
                 importance=row.importance,
             )
         )
-    return len(rows)
+        inserted += 1
+    return inserted

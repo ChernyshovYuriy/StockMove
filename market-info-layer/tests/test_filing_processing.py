@@ -457,3 +457,42 @@ def test_process_8k_stores_clean_text_and_preserves_raw_html(monkeypatch, tmp_pa
         assert "EntityCommonStockSharesOutstanding" not in doc.raw_text
         event = session.query(FilingEvent).one()
         assert event.sec_item == "Item 2.02"
+
+
+def _form4_with_code(code: str) -> str:
+    return FORM4_XML.replace(
+        "<transactionCode>P</transactionCode>", f"<transactionCode>{code}</transactionCode>"
+    )
+
+
+def test_form4_open_market_sale_classified_medium():
+    rows = parse_form4_xml(_form4_with_code("S"))
+    assert rows[0].transaction_type == "Sale"
+    assert rows[0].importance == "medium"
+
+
+def test_form4_tax_withholding_classified_low():
+    rows = parse_form4_xml(_form4_with_code("F"))
+    assert rows[0].transaction_type == "Tax withholding/payment"
+    assert rows[0].importance == "low"
+
+
+def test_form4_unknown_transaction_code_gets_descriptive_type():
+    rows = parse_form4_xml(_form4_with_code("Z"))
+    assert rows[0].transaction_type == "Unknown transaction code: Z"
+    assert rows[0].importance == "unknown"
+
+
+def test_form4_duplicate_prevention(monkeypatch, tmp_path):
+    with _session(tmp_path) as session:
+        filing = _filing("4", "0009")
+        session.add(filing)
+        session.commit()
+        monkeypatch.setattr(sec_documents, "download_filing_document", lambda url: FORM4_XML)
+
+        assert process_sec_filings(session, limit=10, form_type="4") == 1
+        filing.processed = False
+        session.query(FilingDocument).delete()
+        session.commit()
+        assert process_sec_filings(session, limit=10, form_type="4") == 1
+        assert session.query(InsiderTransaction).count() == 1
