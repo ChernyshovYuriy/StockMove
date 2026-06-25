@@ -158,9 +158,7 @@ def _export_fieldnames(columns: list[str], include_raw: bool) -> list[str]:
     fieldnames: list[str] = []
     for col in columns:
         if not include_raw and _is_raw_column(col):
-            fieldnames.extend(
-                [f"{col}_original_length", f"{col}_sha256", f"{col}_preview"]
-            )
+            fieldnames.extend([f"{col}_original_length", f"{col}_sha256", f"{col}_preview"])
         else:
             fieldnames.append(col)
     return fieldnames
@@ -347,6 +345,18 @@ def _health_checks(
                 "GROUP BY filing_id, sec_item, event_type HAVING COUNT(*) > 1"
             )
         ]
+    if _has(tables, columns, "macro_observations", "series_id", "observation_date"):
+        checks["latest_dates"]["latest_macro_observation_date_by_series_id"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT series_id, MAX(observation_date) AS latest_observation_date "
+                "FROM macro_observations GROUP BY series_id ORDER BY series_id"
+            )
+        ]
+    if _has(tables, columns, "trading_halts", "halt_time"):
+        checks["latest_dates"]["latest_halt_time"] = _scalar(
+            conn, "SELECT MAX(halt_time) FROM trading_halts"
+        )
     for key, table, col in [
         ("latest_filing_date", "filings", "filing_date"),
         ("latest_filing_event_date", "filing_events", "event_date"),
