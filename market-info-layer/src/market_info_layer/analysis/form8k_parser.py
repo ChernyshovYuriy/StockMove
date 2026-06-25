@@ -31,7 +31,7 @@ _HIGH_502_ROLE_RE = re.compile(
 )
 _HIGH_502_CHANGE_RE = re.compile(
     r"\b(resign(?:ed|ation|s)?|depart(?:ure|ed|ing)?|terminat(?:e|ed|ion)|"
-    r"transition(?:ed|ing)?\s+(?:from|out of)?\s*(?:the\s+)?role|"
+    r"transition(?:s|ed|ing)?(?:\s+(?:from|out of))?|"
     r"effective\s+immediate(?:ly)?|immediate(?:ly)?\s+effect(?:ive)?)\b",
     re.I,
 )
