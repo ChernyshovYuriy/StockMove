@@ -1,3 +1,5 @@
+from html.parser import HTMLParser
+
 import pandas as pd
 import requests
 from sqlalchemy.orm import Session
@@ -12,11 +14,61 @@ class HaltParseError(ValueError):
     pass
 
 
-def parse_halts_html(html: str) -> list[dict[str, str | None]]:
+class _SimpleTableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.tables: list[list[list[str]]] = []
+        self._current_table: list[list[str]] | None = None
+        self._current_row: list[str] | None = None
+        self._current_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "table":
+            self._current_table = []
+        elif tag == "tr" and self._current_table is not None:
+            self._current_row = []
+        elif tag in {"td", "th"} and self._current_row is not None:
+            self._current_cell = []
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell is not None:
+            self._current_cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self._current_cell is not None and self._current_row is not None:
+            self._current_row.append(" ".join(self._current_cell).strip())
+            self._current_cell = None
+        elif tag == "tr" and self._current_row is not None and self._current_table is not None:
+            if self._current_row:
+                self._current_table.append(self._current_row)
+            self._current_row = None
+        elif tag == "table" and self._current_table is not None:
+            if self._current_table:
+                self.tables.append(self._current_table)
+            self._current_table = None
+
+
+def _tables_from_html(html: str) -> list[pd.DataFrame]:
     try:
-        tables = pd.read_html(html)
+        return pd.read_html(html)
+    except ImportError:
+        parser = _SimpleTableParser()
+        parser.feed(html)
+        tables = []
+        for raw_table in parser.tables:
+            if not raw_table:
+                continue
+            headers, *rows = raw_table
+            tables.append(pd.DataFrame(rows, columns=headers))
+        return tables
     except ValueError as exc:
         raise HaltParseError("No trading halt table found in Nasdaq response") from exc
+
+
+def parse_halts_html(html: str) -> list[dict[str, str | None]]:
+    tables = _tables_from_html(html)
+    if not tables:
+        raise HaltParseError("No trading halt table found in Nasdaq response")
     for table in tables:
         columns = {str(c).strip().lower(): c for c in table.columns}
         symbol_col = next((c for k, c in columns.items() if "symbol" in k), None)

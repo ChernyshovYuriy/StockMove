@@ -23,6 +23,9 @@ def _link_config(label: str = "SEC source") -> dict:
     return {"source_url": st.column_config.LinkColumn(label)}
 
 
+IMPORTANCE_ORDER = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
+
+
 st.title("Market Information Layer")
 page = st.sidebar.radio(
     "Section",
@@ -102,22 +105,59 @@ with Session(get_engine()) as session:
     elif page == "Filing events":
         rows = dashboard_rows(session, FilingEvent)
         df = pd.DataFrame(rows)
+        if not df.empty:
+            df["_importance_rank"] = df["importance"].map(IMPORTANCE_ORDER).fillna(4)
+            df = df.sort_values(
+                by=["event_date", "_importance_rank"],
+                ascending=[False, True],
+                na_position="last",
+            )
         columns = [
             "ticker",
             "form_type",
             "event_date",
             "event_type",
-            "sec_item",
-            "headline",
             "summary",
             "importance",
             "needs_human_review",
             "source_url",
         ]
-        st.dataframe(
-            df[[c for c in columns if c in df.columns]] if not df.empty else df,
-            column_config=_link_config(),
-        )
+        if df.empty:
+            st.info("No parsed filing events yet.")
+        else:
+            view = st.radio("View", ["Cards", "Table"], horizontal=True)
+            if view == "Table":
+                table_columns = [
+                    "ticker",
+                    "form_type",
+                    "event_date",
+                    "event_type",
+                    "sec_item",
+                    "headline",
+                    "summary",
+                    "importance",
+                    "needs_human_review",
+                    "source_url",
+                ]
+                st.dataframe(
+                    df[[c for c in table_columns if c in df.columns]],
+                    column_config=_link_config(),
+                    hide_index=True,
+                )
+            else:
+                for row in df[[c for c in columns if c in df.columns]].to_dict("records"):
+                    importance = (row.get("importance") or "unknown").upper()
+                    review = "Needs review" if row.get("needs_human_review") else "Parsed"
+                    st.markdown(
+                        f"**{row.get('ticker', '')}** · {row.get('event_date') or 'No date'} · "
+                        f"{row.get('form_type', '')} · **{importance}** · {review}"
+                    )
+                    st.markdown(f"{row.get('event_type') or 'Filing event'}")
+                    if row.get("summary"):
+                        st.write(row["summary"])
+                    if row.get("source_url"):
+                        st.link_button("SEC source", row["source_url"])
+                    st.divider()
     elif page == "Macro observations":
         st.dataframe(dashboard_rows(session, MacroObservation))
     elif page == "Trading halts":
