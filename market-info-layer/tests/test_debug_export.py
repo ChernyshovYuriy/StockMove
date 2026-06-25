@@ -361,3 +361,39 @@ def test_export_debug_include_raw_documents_does_not_crash_with_mixed_raw_column
     rows = _exported_rows(Path(result.output.strip()), "docs")
     assert rows[1]["raw_xml"] == "<xml>later</xml>"
     assert rows[1]["raw_html"] == "<html>later</html>"
+
+
+def test_export_debug_reports_incomplete_price_counts(tmp_path, monkeypatch):
+    db_path = tmp_path / "prices.db"
+    _set_db(monkeypatch, db_path)
+    init_db(f"sqlite:///{db_path}")
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "INSERT INTO prices "
+        "(ticker,price_date,open,high,low,close,volume,is_complete,source,collected_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("AAPL", "2026-06-24", 1, 1, 1, 1, 100, 1, "mock", "now"),
+    )
+    con.execute(
+        "INSERT INTO prices "
+        "(ticker,price_date,open,high,low,close,volume,is_complete,source,collected_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("AAPL", "2026-06-25", 1, 1, 1, 1, 50, 0, "mock", "now"),
+    )
+    con.commit()
+    con.close()
+
+    result = runner.invoke(app, ["export-debug", "--output-dir", str(tmp_path / "exports")])
+
+    assert result.exit_code == 0, result.output
+    with zipfile.ZipFile(Path(result.output.strip())) as zf:
+        health = json.loads(zf.read("health_checks.json"))
+    assert health["counts"]["prices_by_ticker"][0] == {"value": "AAPL", "count": 2}
+    assert health["counts"]["incomplete_prices_by_ticker"][0] == {
+        "ticker": "AAPL",
+        "count": 1,
+    }
+    assert health["latest_dates"]["latest_complete_price_date_by_ticker"][0] == {
+        "ticker": "AAPL",
+        "latest_complete_price_date": "2026-06-24",
+    }

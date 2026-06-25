@@ -52,18 +52,31 @@ def _event_summary(event: FilingEvent) -> str:
     return _truncate(". ".join(summary_parts) if summary_parts else "No summary available.", 240)
 
 
-def _format_price_context(session: Session, event: FilingEvent) -> str:
+def _format_price_context(session: Session, event: FilingEvent, *, debug: bool = False) -> str:
     if not event.event_date:
         return "Price reaction around event: unavailable (missing event date; needs human review)."
     reaction = event_price_reaction(session, event.ticker, event.event_date)
-    if reaction.close_event_or_next is None:
-        return "Price reaction around event: unavailable (no stored prices; needs human review)."
+    if reaction.status == "missing_price_data" or reaction.close_event_or_next is None:
+        return "Price reaction around event: unavailable (missing_price_data; needs human review)."
+    if not debug and reaction.status == "incomplete_price_window":
+        return (
+            "Price reaction around event: unavailable "
+            "(incomplete_price_window; needs human review)."
+        )
     def fmt(value):
         return "n/a" if value is None else f"{value:.2f}"
     def fmti(value):
         return "n/a" if value is None else str(value)
+    if not debug:
+        return (
+            "Price context: "
+            f"+1d {fmt(reaction.pct_1d)}%, +5d {fmt(reaction.pct_5d)}%, "
+            f"volume {fmt(reaction.volume_ratio)}x 20d avg. "
+            "Price reaction around event; same-period movement; needs human review."
+        )
     return (
         "Price reaction around event (same-period movement; needs human review): "
+        f"status={reaction.status}, "
         f"close_prev={fmt(reaction.close_prev)}, "
         f"close_event_or_next={fmt(reaction.close_event_or_next)}, "
         f"close_plus_1={fmt(reaction.close_plus_1)}, pct_1d={fmt(reaction.pct_1d)}%, "
@@ -81,25 +94,45 @@ def _format_event_debug(session: Session, event: FilingEvent) -> str:
         f"sec_item={event.sec_item or 'n/a'} event_type={event.event_type or 'n/a'} "
         f"needs_human_review={event.needs_human_review}: "
         f"{event.headline or 'No headline'}. {event.summary or ''} "
-        f"{_format_price_context(session, event)} Source: {event.source_url}"
+        f"{_format_price_context(session, event, debug=True)} Source: {event.source_url}"
     )
 
 
-def _format_event_compact(session: Session, event: FilingEvent) -> str:
+def _format_event_compact(
+    session: Session, event: FilingEvent, *, include_price_context: bool
+) -> str:
+    price_context = (
+        "\n" + _format_price_context(session, event) if include_price_context else ""
+    )
     return (
         f"[{event.importance or 'unknown'}] {event.ticker} — "
         f"{event.event_date or 'unknown'} — {event.sec_item or event.form_type or 'n/a'}\n"
         f"Event: {event.event_type or 'n/a'}\n"
         f"Summary: {_event_summary(event)}\n"
-        f"Source: {event.source_url}\n"
-        f"{_format_price_context(session, event)}"
+        f"Source: {event.source_url}"
+        f"{price_context}"
     )
 
 
-def _format_event(session: Session, event: FilingEvent, style: ReportStyle) -> str:
+def _format_event(
+    session: Session,
+    event: FilingEvent,
+    style: ReportStyle,
+    *,
+    include_low: bool = False,
+    debug_price_context: bool = False,
+) -> str:
     if style == "debug":
         return _format_event_debug(session, event)
-    return _format_event_compact(session, event)
+    include_price_context = (
+        event.importance in {"high", "medium"}
+        and not _is_item_901(event)
+        or (event.importance == "low" and include_low and debug_price_context)
+    )
+    include_price_context = include_price_context and not _is_item_901(event)
+    return _format_event_compact(
+        session, event, include_price_context=include_price_context
+    )
 
 
 def _format_macro_latest(row: dict) -> str:
@@ -157,6 +190,7 @@ def generate_daily_brief(
     output_name: str | None = None,
     style: ReportStyle = "compact",
     max_unprocessed: int = DEFAULT_MAX_UNPROCESSED,
+    debug_price_context: bool = False,
 ) -> Path:
     if style not in ("compact", "debug"):
         raise ValueError("style must be compact or debug")
@@ -216,15 +250,42 @@ def generate_daily_brief(
         "Speculation: None.",
         "",
         "## Parsed filing events",
-        *(_format_event(session, e, style) for e in material_events),
+        *(
+            _format_event(
+                session,
+                e,
+                style,
+                include_low=include_low,
+                debug_price_context=debug_price_context,
+            )
+            for e in material_events
+        ),
         *(["- No parsed filing events for this selection."] if not material_events else []),
         "",
         "## Low-importance parsed filing events",
-        *(_format_event(session, e, style) for e in low_events),
+        *(
+            _format_event(
+                session,
+                e,
+                style,
+                include_low=include_low,
+                debug_price_context=debug_price_context,
+            )
+            for e in low_events
+        ),
         *(["- No low-importance parsed filing events."] if not low_events else []),
         "",
         "## Recently processed filing events",
-        *(_format_event(session, e, style) for e in processed_events),
+        *(
+            _format_event(
+                session,
+                e,
+                style,
+                include_low=include_low,
+                debug_price_context=debug_price_context,
+            )
+            for e in processed_events
+        ),
         *(
             ["- Not requested. Use --processed-today to populate this section."]
             if not processed_today
