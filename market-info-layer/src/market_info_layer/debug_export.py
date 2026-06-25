@@ -352,6 +352,29 @@ def _health_checks(
                 "GROUP BY filing_id, sec_item, event_type HAVING COUNT(*) > 1"
             )
         ]
+    if _has(
+        tables,
+        columns,
+        "insider_transactions",
+        "filing_id",
+        "owner_name",
+        "transaction_date",
+        "transaction_code",
+        "shares",
+        "price",
+        "direct_or_indirect",
+        "shares_owned_after",
+    ):
+        checks["duplicates"]["insider_transactions_by_filing_transaction"] = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT filing_id, owner_name, transaction_date, transaction_code, shares, "
+                "price, direct_or_indirect, shares_owned_after, COUNT(*) AS count "
+                "FROM insider_transactions "
+                "GROUP BY filing_id, owner_name, transaction_date, transaction_code, shares, "
+                "price, direct_or_indirect, shares_owned_after HAVING COUNT(*) > 1"
+            )
+        ]
     if _has(tables, columns, "prices", "ticker", "price_date"):
         checks["latest_dates"]["latest_price_date_by_ticker"] = [
             dict(r)

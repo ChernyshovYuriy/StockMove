@@ -101,10 +101,28 @@ with Session(get_engine()) as session:
             "source_url",
             "importance",
         ]
-        st.dataframe(
-            df[[c for c in columns if c in df.columns]] if not df.empty else df,
-            column_config=_link_config(),
-        )
+        if df.empty:
+            st.info("No insider transactions parsed yet.")
+        else:
+            ticker = st.text_input("Ticker filter").upper().strip()
+            owner = st.text_input("Owner filter").strip().casefold()
+            transaction_types = sorted(t for t in df["transaction_type"].dropna().unique())
+            selected_types = st.multiselect("Transaction type", transaction_types)
+            importance_values = ["high", "medium", "low", "unknown"]
+            selected_importance = st.multiselect("Importance", importance_values)
+            if ticker:
+                df = df[df["ticker"] == ticker]
+            if owner:
+                df = df[df["owner_name"].fillna("").str.casefold().str.contains(owner)]
+            if selected_types:
+                df = df[df["transaction_type"].isin(selected_types)]
+            if selected_importance:
+                df = df[df["importance"].isin(selected_importance)]
+            df = df.sort_values(by="transaction_date", ascending=False, na_position="last")
+            st.dataframe(
+                df[[c for c in columns if c in df.columns]],
+                column_config=_link_config(),
+            )
     elif page == "Filing events":
         rows = dashboard_rows(session, FilingEvent)
         df = pd.DataFrame(rows)
