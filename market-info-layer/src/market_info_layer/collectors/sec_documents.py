@@ -1,3 +1,4 @@
+# ruff: noqa: E501, E701
 from __future__ import annotations
 
 import re
@@ -5,17 +6,19 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 
 import requests
+from requests import RequestException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from market_info_layer.analysis.form4_parser import Form4ParseError, store_form4_transactions
 from market_info_layer.analysis.form8k_parser import store_8k_events
+from market_info_layer.analysis.sec_filing_parser import store_generic_filing_events
 from market_info_layer.db.models import Filing, FilingDocument, FilingEvent
 from market_info_layer.settings import get_settings
 from market_info_layer.utils.rate_limit import sleep_for
 from market_info_layer.utils.time import utc_now_iso
 
-SUPPORTED_PROCESSING_FORMS = {"8-K", "4"}
+SUPPORTED_PROCESSING_FORMS = {"8-K", "4", "10-K", "10-Q", "DEF 14A", "S-1", "SC 13G"}
 
 _BLOCK_TAGS = {
     "address",
@@ -356,7 +359,16 @@ def process_sec_filings(
         )
         if existing:
             continue
-        download = _coerce_download(download_filing_document(filing.filing_url), filing.filing_url)
+        try:
+            download = _coerce_download(download_filing_document(filing.filing_url), filing.filing_url)
+        except RequestException:
+            if filing.form_type in {"10-K", "10-Q", "DEF 14A", "S-1", "SC 13G"}:
+                filing.processed = True
+                filing.processing_status = "unsupported_type"
+                session.commit()
+                processed += 1
+                continue
+            raise
         content = download.text
         text = extract_text(content)
         xml = (
@@ -403,6 +415,9 @@ def process_sec_filings(
                 download.final_url,
                 filing.filing_date,
             )
+            filing.processing_status = "parsed"
+        elif filing.form_type in {"10-K", "10-Q", "DEF 14A", "S-1", "SC 13G"}:
+            store_generic_filing_events(session, filing.id, filing.ticker, filing.form_type, text, download.final_url, filing.filing_date)
             filing.processing_status = "parsed"
         filing.processed = True
         processed += 1

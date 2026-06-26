@@ -1,3 +1,4 @@
+# ruff: noqa: E501, E701
 from collections.abc import Generator
 from pathlib import Path
 
@@ -25,6 +26,7 @@ def init_db(database_url: str | None = None) -> None:
     _ensure_price_columns(engine)
     _ensure_filing_processing_status(engine)
     _ensure_insider_transaction_columns(engine)
+    _ensure_filing_event_columns(engine)
     _ensure_common_indexes(engine)
 
 
@@ -124,6 +126,13 @@ def _ensure_insider_transaction_columns(engine) -> None:
         "reporting_owner_name": "TEXT",
         "reporting_owner_cik": "TEXT",
         "relationship_to_issuer": "TEXT",
+        "security_title": "TEXT",
+        "transaction_table": "TEXT",
+        "transaction_row_index": "INTEGER",
+        "footnote_ids": "TEXT",
+        "ownership_form": "TEXT",
+        "deemed_execution_date": "TEXT",
+        "transaction_hash": "TEXT",
     }
     with engine.begin() as conn:
         for name, column_type in required.items():
@@ -149,3 +158,15 @@ def _ensure_insider_transaction_columns(engine) -> None:
                 "COALESCE(relationship_to_issuer, owner_role)"
             )
         )
+
+
+def _ensure_filing_event_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "filing_events" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("filing_events")}
+    with engine.begin() as conn:
+        if "event_hash" not in existing:
+            conn.execute(text("ALTER TABLE filing_events ADD COLUMN event_hash TEXT"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_filing_events_event_hash ON filing_events(event_hash) WHERE event_hash IS NOT NULL"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_insider_transaction_hash ON insider_transactions(transaction_hash) WHERE transaction_hash IS NOT NULL"))

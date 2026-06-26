@@ -1,3 +1,4 @@
+# ruff: noqa: E501, E701
 import logging
 import time
 from pathlib import Path
@@ -85,22 +86,37 @@ def collect_sec_filings(
     session: Session, watchlist_path: Path | None = None, delay_seconds: float = 0.1
 ) -> int:
     inserted = 0
+    requested_forms = sorted(FORMS)
     for item in read_watchlist(watchlist_path):
-        if not item.get("cik"):
-            logger.warning("Skipping SEC collection for %s: no CIK mapping", item.get("ticker"))
+        ticker = item.get("ticker")
+        if item.get("active") is False:
+            logger.info("Skipping inactive SEC collection ticker %s", ticker)
             continue
-        payload = fetch_submissions(item["cik"])
-        rows = parse_recent_filings(item["ticker"], item["cik"], payload)
-        if not rows:
-            logger.info("No supported SEC filings found for %s", item.get("ticker"))
-        for row in rows:
-            exists = session.scalar(
-                select(Filing.id).where(Filing.accession_number == row["accession_number"])
-            )
-            if exists:
-                continue
-            session.add(Filing(**row))
-            inserted += 1
-        session.commit()
+        cik = item.get("cik")
+        if not cik or not str(cik).strip().isdigit():
+            logger.warning("Skipping SEC collection for %s: no CIK mapping or invalid CIK", ticker)
+            continue
+        fetched = inserted_for_ticker = skipped = errors = 0
+        try:
+            payload = fetch_submissions(cik)
+            rows = parse_recent_filings(ticker, cik, payload)
+            fetched = len(rows)
+            if not rows:
+                logger.info("No supported SEC filings found for %s", ticker)
+            for row in rows:
+                exists = session.scalar(select(Filing.id).where(Filing.accession_number == row["accession_number"]))
+                if exists:
+                    skipped += 1
+                    continue
+                session.add(Filing(**row))
+                inserted += 1
+                inserted_for_ticker += 1
+            session.commit()
+        except Exception:
+            session.rollback()
+            errors += 1
+            logger.exception("SEC collection failed for %s CIK %s", ticker, cik)
+        finally:
+            logger.info("SEC ingestion summary ticker=%s cik=%s requested_forms=%s fetched=%s inserted=%s skipped_existing=%s errors=%s", ticker, pad_cik(cik), requested_forms, fetched, inserted_for_ticker, skipped, errors)
         time.sleep(delay_seconds)
     return inserted

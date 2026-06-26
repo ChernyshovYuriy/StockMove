@@ -1,5 +1,8 @@
+# ruff: noqa: E501, E701
 from __future__ import annotations
 
+import hashlib
+import json
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
@@ -130,6 +133,12 @@ class ParsedForm4Transaction:
     direct_or_indirect: str | None
     shares_owned_after: float | None
     importance: str
+    security_title: str | None = None
+    transaction_table: str | None = None
+    transaction_row_index: int | None = None
+    footnote_ids: str | None = None
+    ownership_form: str | None = None
+    deemed_execution_date: str | None = None
 
     @property
     def ticker(self) -> str | None:
@@ -151,11 +160,8 @@ def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
     owner_cik = _txt(owner, "reportingOwnerId/rptOwnerCik")
     owner_role = _role(owner)
     parsed: list[ParsedForm4Transaction] = []
-    transaction_nodes = [
-        *root.findall(".//nonDerivativeTransaction"),
-        *root.findall(".//derivativeTransaction"),
-    ]
-    for txn in transaction_nodes:
+    transaction_nodes = [("non_derivative", i, n) for i, n in enumerate(root.findall(".//nonDerivativeTransaction"), start=1)] + [("derivative", i, n) for i, n in enumerate(root.findall(".//derivativeTransaction"), start=1)]
+    for table_name, row_index, txn in transaction_nodes:
         code = _txt(txn, "transactionCoding/transactionCode")
         shares = _num(_txt(txn, "transactionAmounts/transactionShares/value"))
         parsed.append(
@@ -175,14 +181,27 @@ def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
                 _txt(txn, "ownershipNature/directOrIndirectOwnership/value"),
                 _num(_txt(txn, "postTransactionAmounts/sharesOwnedFollowingTransaction/value")),
                 classify_transaction(code, shares),
+                _txt(txn, "securityTitle/value"),
+                table_name,
+                row_index,
+                ",".join([el.attrib.get("id", "") for el in txn.findall(".//footnoteId") if el.attrib.get("id")]) or None,
+                _txt(txn, "ownershipNature/directOrIndirectOwnership/value"),
+                _txt(txn, "deemedExecutionDate/value"),
             )
         )
     return parsed
 
 
+def _transaction_hash(filing_id: int, row: ParsedForm4Transaction) -> str:
+    payload = [filing_id, row.transaction_table, row.transaction_row_index, row.security_title, row.transaction_date, row.transaction_code, row.shares, row.price, row.direct_or_indirect]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
 def _transaction_exists(
     session: Session, filing_id: int, row: ParsedForm4Transaction, source_url: str
 ) -> bool:
+    tx_hash = _transaction_hash(filing_id, row)
+    if session.query(InsiderTransaction.id).filter_by(transaction_hash=tx_hash).first() is not None:
+        return True
     return (
         session.query(InsiderTransaction.id)
         .filter_by(
@@ -213,6 +232,7 @@ def store_form4_transactions(
     for row in rows:
         if _transaction_exists(session, filing_id, row, source_url):
             continue
+        tx_hash = _transaction_hash(filing_id, row)
         session.add(
             InsiderTransaction(
                 filing_id=filing_id,
@@ -232,6 +252,13 @@ def store_form4_transactions(
                 price=row.price,
                 direct_or_indirect=row.direct_or_indirect,
                 shares_owned_after=row.shares_owned_after,
+                security_title=row.security_title,
+                transaction_table=row.transaction_table,
+                transaction_row_index=row.transaction_row_index,
+                footnote_ids=row.footnote_ids,
+                ownership_form=row.ownership_form,
+                deemed_execution_date=row.deemed_execution_date,
+                transaction_hash=tx_hash,
                 source_url=source_url,
                 collected_at=utc_now_iso(),
                 importance=row.importance,

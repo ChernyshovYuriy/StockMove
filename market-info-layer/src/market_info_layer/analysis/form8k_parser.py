@@ -1,8 +1,10 @@
+# ruff: noqa: E501, E701
 from __future__ import annotations
 
 import re
 from html.parser import HTMLParser
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from market_info_layer.db.models import FilingEvent
@@ -13,7 +15,7 @@ ITEM_TYPES = {
     "2.02": "Results of operations / financial condition",
     "2.05": "Exit/disposal activities",
     "2.06": "Material impairments",
-    "3.01": "Delisting notice",
+    "3.01": "Listing status event",
     "5.02": "Departure/election of directors or officers",
     "5.07": "Shareholder voting results",
     "7.01": "Regulation FD disclosure",
@@ -23,6 +25,14 @@ ITEM_TYPES = {
 
 HIGH_DEFAULT_ITEMS = {"Item 2.05", "Item 2.06", "Item 3.01"}
 IMPORTANCE_RANK = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
+
+
+_LISTING_TRANSFER_RE = re.compile(r"\b(transfer(?:red|ring)? (?:its )?listing|commence trading on nasdaq|voluntarily withdrew from nyse|same ticker symbol|same symbol)\b", re.I)
+_LISTING_DEFICIENCY_RE = re.compile(r"\b(does not satisfy|non-compliance|noncompliance|deficiency notice|minimum bid price|continued listing standard)\b", re.I)
+_LISTING_DELIST_RE = re.compile(r"\b(delisting|delisted|suspension of trading)\b", re.I)
+_LISTING_VOLUNTARY_RE = re.compile(r"\b(voluntary delist|voluntarily delist|voluntary delisting)\b", re.I)
+_APPOINT_RE = re.compile(r"(?P<person>[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}).{0,80}?(?:appointed|named|elected).{0,80}?(?:as|to serve as) (?P<role>[^.;,]{3,80})", re.I)
+_EFFECTIVE_RE = re.compile(r"effective (?:as of |on )?(?P<date>[A-Z][a-z]+ \d{1,2}, \d{4}|\d{4}-\d{2}-\d{2})", re.I)
 
 _HIGH_502_ROLE_RE = re.compile(
     r"\b(ceo|chief executive officer|cfo|chief financial officer|coo|chief operating officer|"
@@ -108,6 +118,16 @@ def _clean_snippet(text: str, limit: int = 300) -> str:
 
 def _classify_item(sec_item: str, context: str, has_other_events: bool) -> tuple[str, str]:
     title = sec_item.replace("Item ", "")
+    if sec_item == "Item 3.01":
+        if _LISTING_TRANSFER_RE.search(context):
+            return "medium", "Exchange listing transfer disclosed."
+        if _LISTING_DEFICIENCY_RE.search(context):
+            return "high", "Exchange noncompliance or deficiency notice disclosed."
+        if _LISTING_VOLUNTARY_RE.search(context):
+            return "high", "Voluntary delisting disclosed."
+        if _LISTING_DELIST_RE.search(context):
+            return "high", "Delisting-related trading status event disclosed."
+        return "medium", "Listing-status event disclosed; review context."
     if sec_item == "Item 5.02":
         if _LOW_502_RE.search(context) and not _HIGH_502_ROLE_RE.search(context):
             return "low", "Routine director, compensation plan, or committee update."
@@ -150,6 +170,12 @@ def _classify_item(sec_item: str, context: str, has_other_events: bool) -> tuple
 
 
 def _event_summary(sec_item: str, context: str, detail: str) -> str:
+    if sec_item == "Item 5.02":
+        appt = _APPOINT_RE.search(context)
+        eff = _EFFECTIVE_RE.search(context)
+        comp = ", compensation-related" if re.search(r"\b(compensation|equity award|salary|bonus|severance)\b", context, re.I) else ""
+        if appt:
+            detail = f"Leadership appointment: {appt.group('person')} as {appt.group('role').strip()}{comp}." + (f" Effective {eff.group('date')}." if eff else "")
     snippet = _clean_snippet(context)
     if snippet:
         return f"{detail} Context: {snippet}"
@@ -189,8 +215,32 @@ def parse_8k_items(raw_text: str) -> list[dict[str, str]]:
         sec_item = f"Item {number}"
         next_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         nearby = text[match.end() : next_start].strip()
-        event_type = ITEM_TYPES.get(number, "Other filing event")
         importance, detail = _classify_item(sec_item, nearby, has_other_events)
+        event_type = ITEM_TYPES.get(number, "Other filing event")
+        if sec_item == "Item 3.01":
+            lowered = detail.lower()
+            if "transfer" in lowered:
+                event_type = "exchange_listing_transfer"
+            elif "deficiency" in lowered or "noncompliance" in lowered:
+                event_type = "listing_deficiency_notice"
+            elif "voluntary delisting" in lowered:
+                event_type = "voluntary_delisting"
+            elif "delisting" in lowered:
+                event_type = "delisting_notice"
+            else:
+                event_type = "listing_status_event"
+        elif sec_item == "Item 2.02":
+            low = nearby.lower()
+            if "restatement" in low or "correction" in low:
+                event_type = "restatement_or_correction"
+            elif "impairment" in low or "charge" in low:
+                event_type = "impairment_or_charge"
+            elif "guidance" in low or "outlook" in low:
+                event_type = "guidance_update"
+            elif "preliminary" in low:
+                event_type = "preliminary_results"
+            else:
+                event_type = "earnings_release"
         item = {
             "sec_item": sec_item,
             "event_type": event_type,
@@ -237,6 +287,9 @@ def store_8k_events(
         )
         return 1
     for item in items:
+        exists = session.scalar(select(FilingEvent.id).where(FilingEvent.filing_id == filing_id, FilingEvent.sec_item == item["sec_item"], FilingEvent.event_type == item["event_type"], FilingEvent.summary == item["summary"]))
+        if exists:
+            continue
         session.add(
             FilingEvent(
                 filing_id=filing_id,
