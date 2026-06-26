@@ -280,8 +280,8 @@ def _group_count(conn: sqlite3.Connection, table: str, column: str) -> list[dict
     ]
 
 
-def _scalar(conn: sqlite3.Connection, sql: str) -> Any:
-    return conn.execute(sql).fetchone()[0]
+def _scalar(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> Any:
+    return conn.execute(sql, params).fetchone()[0]
 
 
 def _health_checks(
@@ -293,6 +293,7 @@ def _health_checks(
         "duplicates": {},
         "latest_dates": {},
         "missing": {},
+        "issues": [],
     }
     for table, col in [
         ("filings", "ticker"),
@@ -431,21 +432,129 @@ def _health_checks(
             )
         ]
     if _has(tables, columns, "trading_halts", "halt_datetime"):
-        checks["latest_dates"]["latest_halt_datetime"] = _scalar(
-            conn, "SELECT MAX(halt_datetime) FROM trading_halts"
-        )
+        latest_halt = conn.execute(
+            "SELECT halt_datetime, halt_time, timezone AS halt_timezone, "
+            "halt_time AS halt_local_time "
+            "FROM trading_halts WHERE halt_datetime IS NOT NULL AND halt_datetime != '' "
+            "ORDER BY halt_datetime DESC LIMIT 1"
+        ).fetchone()
+        if latest_halt:
+            checks["latest_dates"]["latest_halt"] = dict(latest_halt)
+            checks["latest_dates"]["latest_halt_datetime"] = latest_halt["halt_datetime"]
         checks["missing"]["trading_halts_missing_halt_datetime"] = _scalar(
-            conn, "SELECT COUNT(*) FROM trading_halts "
-            "WHERE halt_datetime IS NULL OR halt_datetime = ''"
+            conn,
+            "SELECT COUNT(*) FROM trading_halts WHERE halt_datetime IS NULL OR halt_datetime = ''",
         )
     if _has(tables, columns, "trading_halts", "reason_text"):
         checks["missing"]["trading_halts_missing_reason_text"] = _scalar(
             conn, "SELECT COUNT(*) FROM trading_halts WHERE reason_text IS NULL OR reason_text = ''"
         )
-    if _has(tables, columns, "trading_halts", "halt_time"):
-        checks["latest_dates"]["latest_halt_time"] = _scalar(
-            conn, "SELECT MAX(halt_time) FROM trading_halts"
+    if _has(tables, columns, "trading_halts", "halt_time") and checks["latest_dates"].get(
+        "latest_halt"
+    ):
+        checks["latest_dates"]["latest_halt_time"] = checks["latest_dates"]["latest_halt"].get(
+            "halt_time"
         )
+
+    if "watchlist" in tables:
+        watch_cols = {c["name"] for c in columns.get("watchlist", [])}
+        watch_tickers = (
+            [r["ticker"] for r in conn.execute("SELECT ticker FROM watchlist ORDER BY ticker")]
+            if "ticker" in watch_cols
+            else []
+        )
+        for ticker in watch_tickers:
+            if "filings" in tables:
+                filing_count = _scalar(
+                    conn, "SELECT COUNT(*) FROM filings WHERE ticker = ?", (ticker,)
+                )
+                if filing_count == 0:
+                    checks["issues"].append(
+                        {
+                            "severity": "WARN",
+                            "code": "watchlist_zero_sec_filings",
+                            "ticker": ticker,
+                            "message": f"{ticker} has zero SEC filings",
+                        }
+                    )
+                latest = conn.execute(
+                    "SELECT MAX(filing_date) AS latest FROM filings WHERE ticker = ?", (ticker,)
+                ).fetchone()["latest"]
+                checks["latest_dates"].setdefault("latest_filing_date_by_ticker", []).append(
+                    {"ticker": ticker, "latest_filing_date": latest}
+                )
+            if "prices" in tables:
+                price_count = _scalar(
+                    conn, "SELECT COUNT(*) FROM prices WHERE ticker = ?", (ticker,)
+                )
+                if price_count == 0:
+                    checks["issues"].append(
+                        {
+                            "severity": "ERROR",
+                            "code": "watchlist_zero_price_rows",
+                            "ticker": ticker,
+                            "message": f"{ticker} has zero price rows",
+                        }
+                    )
+        placeholder_values = (
+            "Example watchlist entry",
+            "Example research thesis",
+            "Example invalidation condition",
+            "Example catalyst",
+        )
+        for field in ("reason_watching", "thesis", "invalidation_condition", "catalyst"):
+            if field in watch_cols:
+                placeholder_sql = ",".join("?" for _ in placeholder_values)
+                sql = (
+                    f"SELECT ticker, {field} AS value FROM watchlist "
+                    f"WHERE {field} IN ({placeholder_sql})"
+                )
+                for r in conn.execute(sql, placeholder_values):
+                    checks["issues"].append(
+                        {
+                            "severity": "WARN",
+                            "code": "watchlist_placeholder_text",
+                            "ticker": r["ticker"],
+                            "field": field,
+                            "message": f"{r['ticker']} has placeholder {field}",
+                        }
+                    )
+    if _has(tables, columns, "insider_transactions", "transaction_code"):
+        known = ("P", "S", "A", "D", "F", "G", "M", "C", "X", "J")
+        placeholders = ",".join("?" for _ in known)
+        unknown = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT transaction_code, COUNT(*) AS count FROM insider_transactions "
+                f"WHERE COALESCE(transaction_code,'') NOT IN ({placeholders}) "
+                "GROUP BY transaction_code",
+                known,
+            )
+        ]
+        checks["counts"]["unknown_insider_transaction_codes"] = unknown
+        for row in unknown:
+            checks["issues"].append(
+                {"severity": "WARN", "code": "unknown_insider_transaction_code", **row}
+            )
+    if _has(tables, columns, "filing_events", "ticker", "event_date") and _has(
+        tables, columns, "prices", "ticker", "price_date"
+    ):
+        suspicious = [
+            dict(r)
+            for r in conn.execute("""
+            SELECT e.id, e.ticker, e.event_date, MIN(p.price_date) AS min_price_date
+            FROM filing_events e JOIN prices p ON p.ticker = e.ticker
+            WHERE e.event_date IS NOT NULL
+            GROUP BY e.id, e.ticker, e.event_date
+            HAVING date(e.event_date) < date(min_price_date)
+            ORDER BY e.ticker, e.event_date LIMIT 100
+        """)
+        ]
+        checks["issues"].extend(
+            {"severity": "WARN", "code": "event_predates_price_history", **row}
+            for row in suspicious
+        )
+
     for key, table, col in [
         ("latest_filing_date", "filings", "filing_date"),
         ("latest_filing_event_date", "filing_events", "event_date"),

@@ -198,9 +198,7 @@ def test_small_metadata_fields_remain_readable_by_default(tmp_path, monkeypatch)
             csv.DictReader(zf.read("tables/filing_documents.csv").decode().splitlines())
         )
         filing_rows = list(csv.DictReader(zf.read("tables/filings.csv").decode().splitlines()))
-        event_rows = list(
-            csv.DictReader(zf.read("tables/filing_events.csv").decode().splitlines())
-        )
+        event_rows = list(csv.DictReader(zf.read("tables/filing_events.csv").decode().splitlines()))
     assert doc_rows[0]["content_type"] == "text/html"
     assert doc_rows[0]["source_url"] == "https://example.com/a"
     assert filing_rows[0]["primary_document"] == "a.htm"
@@ -252,8 +250,7 @@ def test_health_check_reports_duplicate_filing_events_by_filing_item_type(tmp_pa
 def _seed_single_raw_column_table(db_path: Path, column_name: str, value: str) -> None:
     con = sqlite3.connect(db_path)
     con.execute(
-        f"CREATE TABLE debug_raw_{column_name} "
-        f"(id INTEGER PRIMARY KEY, {column_name} TEXT)"
+        f"CREATE TABLE debug_raw_{column_name} (id INTEGER PRIMARY KEY, {column_name} TEXT)"
     )
     con.execute(f"INSERT INTO debug_raw_{column_name} ({column_name}) VALUES (?)", (value,))
     con.commit()
@@ -315,8 +312,7 @@ def test_export_debug_default_mode_does_not_crash_with_mixed_raw_columns(tmp_pat
     _set_db(monkeypatch, db_path)
     con = sqlite3.connect(db_path)
     con.execute(
-        "CREATE TABLE docs "
-        "(id INTEGER PRIMARY KEY, raw_text TEXT, raw_xml TEXT, raw_html TEXT)"
+        "CREATE TABLE docs (id INTEGER PRIMARY KEY, raw_text TEXT, raw_xml TEXT, raw_html TEXT)"
     )
     con.execute("INSERT INTO docs (raw_text) VALUES (?)", ("text",))
     con.execute(
@@ -341,8 +337,7 @@ def test_export_debug_include_raw_documents_does_not_crash_with_mixed_raw_column
     _set_db(monkeypatch, db_path)
     con = sqlite3.connect(db_path)
     con.execute(
-        "CREATE TABLE docs "
-        "(id INTEGER PRIMARY KEY, raw_text TEXT, raw_xml TEXT, raw_html TEXT)"
+        "CREATE TABLE docs (id INTEGER PRIMARY KEY, raw_text TEXT, raw_xml TEXT, raw_html TEXT)"
     )
     con.execute("INSERT INTO docs (raw_text) VALUES (?)", ("text",))
     con.execute(

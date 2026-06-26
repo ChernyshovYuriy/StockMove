@@ -24,6 +24,7 @@ def init_db(database_url: str | None = None) -> None:
     _ensure_trading_halt_columns(engine)
     _ensure_price_columns(engine)
     _ensure_filing_processing_status(engine)
+    _ensure_insider_transaction_columns(engine)
     _ensure_common_indexes(engine)
 
 
@@ -109,3 +110,42 @@ def _ensure_common_indexes(engine) -> None:
             for name, columns in indexes:
                 if name not in existing:
                     conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({columns})"))
+
+
+def _ensure_insider_transaction_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "insider_transactions" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("insider_transactions")}
+    required = {
+        "filing_ticker": "TEXT",
+        "issuer_ticker": "TEXT",
+        "issuer_name": "TEXT",
+        "reporting_owner_name": "TEXT",
+        "reporting_owner_cik": "TEXT",
+        "relationship_to_issuer": "TEXT",
+    }
+    with engine.begin() as conn:
+        for name, column_type in required.items():
+            if name not in existing:
+                conn.execute(
+                    text(f"ALTER TABLE insider_transactions ADD COLUMN {name} {column_type}")
+                )
+        conn.execute(
+            text("UPDATE insider_transactions SET filing_ticker = COALESCE(filing_ticker, ticker)")
+        )
+        conn.execute(
+            text("UPDATE insider_transactions SET issuer_ticker = COALESCE(issuer_ticker, ticker)")
+        )
+        conn.execute(
+            text(
+                "UPDATE insider_transactions SET reporting_owner_name = "
+                "COALESCE(reporting_owner_name, owner_name)"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE insider_transactions SET relationship_to_issuer = "
+                "COALESCE(relationship_to_issuer, owner_role)"
+            )
+        )

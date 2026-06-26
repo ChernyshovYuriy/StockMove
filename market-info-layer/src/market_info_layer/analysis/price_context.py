@@ -21,6 +21,8 @@ class EventPriceReaction:
     avg_volume_20d: float | None
     volume_ratio: float | None
     status: str = "ok"
+    baseline_date: str | None = None
+    baseline_gap_days: int | None = None
 
 
 def _parse_date(value: str | date) -> date:
@@ -39,9 +41,20 @@ def _pct(start: float | None, end: float | None) -> float | None:
 
 
 def event_price_reaction(
-    session: Session, ticker: str, event_date: str | date, *, complete_only: bool = True
+    session: Session,
+    ticker: str,
+    event_date: str | date,
+    *,
+    complete_only: bool = True,
+    max_baseline_gap_days: int = 5,
 ) -> EventPriceReaction:
-    """Return conservative price/volume context around an event date."""
+    """Return conservative price/volume context around an event date.
+
+    The baseline trading row is the event date or next available trading date,
+    but only when it is within ``max_baseline_gap_days`` calendar days. This
+    prevents old filing events from being paired with the first available price
+    row years later.
+    """
 
     parsed_date = _parse_date(event_date)
     rows = session.scalars(
@@ -74,8 +87,36 @@ def event_price_reaction(
     base_idx = event_or_after[0] if event_or_after else None
     event_volume_idx = event_exact[0] if event_exact else base_idx
 
+    if base_idx is None:
+        status = "incomplete_price_window" if incomplete_after_event else "missing_price_data"
+        return EventPriceReaction(None, None, None, None, None, None, None, None, None, status)
+
+    baseline_date = dates[base_idx]
+    baseline_gap_days = (baseline_date - parsed_date).days
+    if baseline_gap_days > max_baseline_gap_days:
+        first_price_date = dates[0]
+        status = (
+            "event_predates_price_history"
+            if parsed_date < first_price_date
+            else "no_nearby_trading_price"
+        )
+        return EventPriceReaction(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            status,
+            baseline_date.isoformat(),
+            baseline_gap_days,
+        )
+
     close_prev = rows[prev_idx].close if prev_idx is not None else None
-    close_event_or_next = rows[base_idx].close if base_idx is not None else None
+    close_event_or_next = rows[base_idx].close
     close_plus_1 = (
         rows[base_idx + 1].close if base_idx is not None and base_idx + 1 < len(rows) else None
     )
@@ -109,4 +150,6 @@ def event_price_reaction(
         avg_volume_20d=avg_volume_20d,
         volume_ratio=volume_ratio,
         status=status,
+        baseline_date=baseline_date.isoformat() if base_idx is not None else None,
+        baseline_gap_days=baseline_gap_days if base_idx is not None else None,
     )

@@ -540,3 +540,13 @@ def test_processed_today_report_does_not_duplicate_filing_event(tmp_path):
         )
         text = path.read_text()
         assert text.count("[medium] ABC — 2026-06-20 — Item 8.01") == 1
+
+
+def test_form4_common_transaction_codes_are_mapped():
+    from market_info_layer.analysis.form4_parser import CODE_DETAILS
+
+    expected = {"P", "S", "A", "D", "F", "G", "M", "C", "X", "J"}
+    for code in expected:
+        rows = parse_form4_xml(_form4_with_code(code))
+        assert not rows[0].transaction_type.startswith("Unknown")
+        assert CODE_DETAILS[code]
