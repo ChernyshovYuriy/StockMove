@@ -216,7 +216,10 @@ def generate_daily_brief(
     ]
     material_events = [e for e in visible_events if include_low or e.importance != "low"]
     low_events = [] if include_low else [e for e in visible_events if e.importance == "low"]
-    processed_events = visible_events if processed_today else []
+    # Avoid emitting identical filing rows in both parsed and recently processed sections.
+    # The parsed sections remain the canonical event listing; this section is only
+    # populated for future distinct processed-only records.
+    processed_events = []
     insider_importance = ["high", "medium", "low"] if include_low else ["high", "medium"]
     insiders = session.scalars(
         select(InsiderTransaction)
