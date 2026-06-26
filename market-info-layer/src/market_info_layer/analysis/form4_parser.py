@@ -48,10 +48,26 @@ CODE_TYPES = {
     "P": "Purchase",
     "S": "Sale",
     "A": "Grant/Award",
-    "M": "Option exercise/conversion",
+    "D": "Disposition to issuer",
     "F": "Tax withholding/payment",
     "G": "Gift",
-    "D": "Disposition to issuer",
+    "M": "Option exercise/conversion",
+    "C": "Conversion",
+    "X": "Option exercise",
+    "J": "Other acquisition/disposition",
+}
+
+CODE_DETAILS = {
+    "P": "Open market or private purchase of non-derivative or derivative securities.",
+    "S": "Open market or private sale of non-derivative or derivative securities.",
+    "A": "Grant, award, or other acquisition from issuer.",
+    "D": "Sale or other disposition back to issuer.",
+    "F": "Payment of exercise price or tax liability by delivering or withholding securities.",
+    "G": "Bona fide gift of securities.",
+    "M": "Exercise or conversion of derivative security.",
+    "C": "Conversion of derivative security.",
+    "X": "Exercise of in-the-money or out-of-the-money derivative security.",
+    "J": "Other acquisition or disposition described in transaction footnotes.",
 }
 
 
@@ -92,14 +108,18 @@ def classify_transaction(code: str | None, shares: float | None = None) -> str:
         return "high"
     if code == "S":
         return "medium"
-    if code in {"A", "F", "M", "G", "D"}:
+    if code in {"A", "F", "M", "G", "D", "C", "X", "J"}:
         return "low"
     return "unknown"
 
 
 @dataclass
 class ParsedForm4Transaction:
-    ticker: str | None
+    issuer_ticker: str | None
+    issuer_name: str | None
+    reporting_owner_name: str | None
+    reporting_owner_cik: str | None
+    relationship_to_issuer: str | None
     owner_name: str | None
     owner_role: str | None
     transaction_date: str | None
@@ -111,6 +131,10 @@ class ParsedForm4Transaction:
     shares_owned_after: float | None
     importance: str
 
+    @property
+    def ticker(self) -> str | None:
+        return self.issuer_ticker
+
 
 def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
     _validate_form4_xml_shape(raw_xml)
@@ -120,9 +144,11 @@ def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
         raise Form4ParseError(f"malformed Form 4 XML: {exc}") from exc
     if root.tag != "ownershipDocument":
         raise Form4ParseError(f"unexpected Form 4 XML root: {root.tag}")
-    ticker = _txt(root, "issuer/issuerTradingSymbol")
+    issuer_ticker = _txt(root, "issuer/issuerTradingSymbol")
+    issuer_name = _txt(root, "issuer/issuerName")
     owner = root.find("reportingOwner")
     owner_name = _txt(owner, "reportingOwnerId/rptOwnerName")
+    owner_cik = _txt(owner, "reportingOwnerId/rptOwnerCik")
     owner_role = _role(owner)
     parsed: list[ParsedForm4Transaction] = []
     transaction_nodes = [
@@ -134,7 +160,11 @@ def parse_form4_xml(raw_xml: str) -> list[ParsedForm4Transaction]:
         shares = _num(_txt(txn, "transactionAmounts/transactionShares/value"))
         parsed.append(
             ParsedForm4Transaction(
-                ticker,
+                issuer_ticker,
+                issuer_name,
+                owner_name,
+                owner_cik,
+                owner_role,
                 owner_name,
                 owner_role,
                 _txt(txn, "transactionDate/value"),
@@ -186,7 +216,13 @@ def store_form4_transactions(
         session.add(
             InsiderTransaction(
                 filing_id=filing_id,
-                ticker=(row.ticker or fallback_ticker or "").upper(),
+                ticker=(fallback_ticker or row.issuer_ticker or "").upper(),
+                filing_ticker=(fallback_ticker or "").upper() or None,
+                issuer_ticker=(row.issuer_ticker or "").upper() or None,
+                issuer_name=row.issuer_name,
+                reporting_owner_name=row.reporting_owner_name,
+                reporting_owner_cik=row.reporting_owner_cik,
+                relationship_to_issuer=row.relationship_to_issuer,
                 owner_name=row.owner_name,
                 owner_role=row.owner_role,
                 transaction_date=row.transaction_date,

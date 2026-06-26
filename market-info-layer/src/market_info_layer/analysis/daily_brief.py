@@ -20,7 +20,11 @@ from market_info_layer.settings import ROOT_DIR
 MATERIAL_FILING_TYPES = {"8-K", "10-Q", "10-K", "S-1", "424B", "SC 13D", "SC 13G", "DEF 14A"}
 IMPORTANCE_RANK = {"high": 0, "medium": 1, "low": 2, "unknown": 3, None: 4}
 ReportStyle = Literal["compact", "debug"]
+ReportMode = Literal["event_date", "processed_at"]
 DEFAULT_MAX_UNPROCESSED = 10
+DEFAULT_MAX_EVENTS = 25
+DEFAULT_MAX_INSIDER_TRANSACTIONS = 25
+DEFAULT_MAX_TRADING_HALTS = 25
 
 
 def _iso_date(value: str | None) -> date | None:
@@ -35,9 +39,10 @@ def _iso_date(value: str | None) -> date | None:
             return None
 
 
-def _event_sort_key(event: FilingEvent) -> tuple[int, int, str]:
+def _event_sort_key(event: FilingEvent) -> tuple[int, int, int, str]:
     event_ordinal = (_iso_date(event.event_date) or date.min).toordinal()
-    return (IMPORTANCE_RANK.get(event.importance, 4), -event_ordinal, event.ticker)
+    review_rank = 0 if event.needs_human_review else 1
+    return (IMPORTANCE_RANK.get(event.importance, 4), review_rank, -event_ordinal, event.ticker)
 
 
 def _truncate(value: str, max_chars: int) -> str:
@@ -54,28 +59,32 @@ def _event_summary(event: FilingEvent) -> str:
 
 def _format_price_context(session: Session, event: FilingEvent, *, debug: bool = False) -> str:
     if not event.event_date:
-        return "Price reaction around event: unavailable (missing event date; needs human review)."
+        return "Price context unavailable: missing event date."
     reaction = event_price_reaction(session, event.ticker, event.event_date)
+    if reaction.status == "event_predates_price_history":
+        return "Price context unavailable: event predates available price history."
+    if reaction.status == "no_nearby_trading_price":
+        return "Price context unavailable: no nearby trading price within 5 days."
     if reaction.status == "missing_price_data" or reaction.close_event_or_next is None:
-        return "Price reaction around event: unavailable (missing_price_data; needs human review)."
+        return "Price context unavailable: missing_price_data."
     if not debug and reaction.status == "incomplete_price_window":
-        return (
-            "Price reaction around event: unavailable "
-            "(incomplete_price_window; needs human review)."
-        )
+        return "Price context incomplete: future price window is not fully available."
+
     def fmt(value):
         return "n/a" if value is None else f"{value:.2f}"
+
     def fmti(value):
         return "n/a" if value is None else str(value)
+
     if not debug:
         return (
             "Price context: "
             f"+1d {fmt(reaction.pct_1d)}%, +5d {fmt(reaction.pct_5d)}%, "
             f"volume {fmt(reaction.volume_ratio)}x 20d avg. "
-            "Price reaction around event; same-period movement; needs human review."
+            "Price reaction around event; same-period movement."
         )
     return (
-        "Price reaction around event (same-period movement; needs human review): "
+        "Price reaction around event (same-period movement): "
         f"status={reaction.status}, "
         f"close_prev={fmt(reaction.close_prev)}, "
         f"close_event_or_next={fmt(reaction.close_event_or_next)}, "
@@ -101,9 +110,7 @@ def _format_event_debug(session: Session, event: FilingEvent) -> str:
 def _format_event_compact(
     session: Session, event: FilingEvent, *, include_price_context: bool
 ) -> str:
-    price_context = (
-        "\n" + _format_price_context(session, event) if include_price_context else ""
-    )
+    price_context = "\n" + _format_price_context(session, event) if include_price_context else ""
     return (
         f"[{event.importance or 'unknown'}] {event.ticker} — "
         f"{event.event_date or 'unknown'} — {event.sec_item or event.form_type or 'n/a'}\n"
@@ -130,8 +137,22 @@ def _format_event(
         or (event.importance == "low" and include_low and debug_price_context)
     )
     include_price_context = include_price_context and not _is_item_901(event)
-    return _format_event_compact(
-        session, event, include_price_context=include_price_context
+    return _format_event_compact(session, event, include_price_context=include_price_context)
+
+
+def _format_insider_transaction(i: InsiderTransaction) -> str:
+    filing_ticker = getattr(i, "filing_ticker", None) or i.ticker
+    issuer_ticker = getattr(i, "issuer_ticker", None) or i.ticker
+    owner = getattr(i, "reporting_owner_name", None) or i.owner_name or "Unknown owner"
+    label = (
+        "Insider transaction for watched issuer"
+        if issuer_ticker == filing_ticker
+        else "Form 4 involving watched company as reporting owner"
+    )
+    return (
+        f"- {label}: watched={filing_ticker} issuer={issuer_ticker} {owner}: "
+        f"{i.transaction_type} {i.shares} shares at {i.price} on {i.transaction_date} "
+        f"({i.importance}) {i.source_url}"
     )
 
 
@@ -154,9 +175,12 @@ def _select_events(
     brief_date: date,
     lookback_days: int | None,
     processed_today: bool,
+    report_mode: ReportMode = "event_date",
 ) -> list[FilingEvent]:
     events = session.scalars(select(FilingEvent)).all()
     if processed_today:
+        report_mode = "processed_at"
+    if report_mode == "processed_at":
         downloaded_today_filing_ids = {
             document.filing_id
             for document in session.scalars(select(FilingDocument)).all()
@@ -186,11 +210,15 @@ def generate_daily_brief(
     *,
     lookback_days: int | None = None,
     processed_today: bool = False,
+    report_mode: ReportMode = "event_date",
     include_low: bool = False,
     output_name: str | None = None,
     style: ReportStyle = "compact",
     max_unprocessed: int = DEFAULT_MAX_UNPROCESSED,
     debug_price_context: bool = False,
+    max_events: int = DEFAULT_MAX_EVENTS,
+    max_insider_transactions: int = DEFAULT_MAX_INSIDER_TRANSACTIONS,
+    max_trading_halts: int = DEFAULT_MAX_TRADING_HALTS,
 ) -> Path:
     if style not in ("compact", "debug"):
         raise ValueError("style must be compact or debug")
@@ -209,13 +237,19 @@ def generate_daily_brief(
         select(TradingHalt).order_by(TradingHalt.halt_datetime.desc())
     ).all()
     macros = latest_macro_values(session)
-    selected_events = _select_events(session, brief_date, lookback_days, processed_today)
+    selected_events = _select_events(
+        session, brief_date, lookback_days, processed_today, report_mode
+    )
     sorted_events = sorted(selected_events, key=_event_sort_key)
     visible_events = [
         e for e in sorted_events if style == "debug" or include_low or not _is_item_901(e)
     ]
-    material_events = [e for e in visible_events if include_low or e.importance != "low"]
-    low_events = [] if include_low else [e for e in visible_events if e.importance == "low"]
+    material_events_all = [e for e in visible_events if include_low or e.importance != "low"]
+    low_events_all = [] if include_low else [e for e in visible_events if e.importance == "low"]
+    material_events = material_events_all[:max_events]
+    low_events = low_events_all[:max_events]
+    omitted_material_events = max(0, len(material_events_all) - len(material_events))
+    omitted_low_events = max(0, len(low_events_all) - len(low_events))
     # Avoid emitting identical filing rows in both parsed and recently processed sections.
     # The parsed sections remain the canonical event listing; this section is only
     # populated for future distinct processed-only records.
@@ -225,7 +259,10 @@ def generate_daily_brief(
         select(InsiderTransaction)
         .where(InsiderTransaction.importance.in_(insider_importance))
         .order_by(InsiderTransaction.transaction_date.desc(), InsiderTransaction.id.desc())
+        .limit(max_insider_transactions + 1)
     ).all()
+    insider_more_count = max(0, len(insiders) - max_insider_transactions)
+    insiders = insiders[:max_insider_transactions]
     review_filings = session.scalars(
         select(Filing)
         .where(Filing.processed.is_(False), Filing.form_type.in_(MATERIAL_FILING_TYPES))
@@ -241,13 +278,31 @@ def generate_daily_brief(
             f"and {brief_date.isoformat()}"
         )
     if processed_today:
+        report_mode = "processed_at"
+    if report_mode == "processed_at":
         selection_text = f"created_at or downloaded_at date={brief_date.isoformat()}"
+    report_title = (
+        "Events Processed During Backfill"
+        if report_mode == "processed_at"
+        else "Events by Event Date"
+    )
+    halts_more_count = max(0, len(halts) - max_trading_halts)
+    halts = sorted(halts, key=lambda h: h.halt_datetime or "", reverse=True)[:max_trading_halts]
     lines = [
+        f"# {report_title}",
         "# Market Information Layer Daily Brief",
         "",
         f"Date: {brief_date.isoformat()}",
         f"Report style: {style}",
+        f"Report mode: {report_mode}",
         f"Parsed filing event selection: {selection_text}",
+        "",
+        "## Summary",
+        f"- Parsed filing events selected: {len(selected_events)}",
+        f"- Material events shown: {len(material_events)} (omitted {omitted_material_events})",
+        f"- Low-importance events shown: {len(low_events)} (omitted {omitted_low_events})",
+        f"- Insider transactions shown: {len(insiders)} (omitted {insider_more_count})",
+        f"- Trading halts shown: {len(halts)} (omitted {halts_more_count})",
         "",
         "## Known facts",
         "## Macro Context",
@@ -304,10 +359,14 @@ def generate_daily_brief(
         ),
         "",
         "## Insider transactions",
+        *(_format_insider_transaction(i) for i in insiders),
         *(
-            f"- {i.ticker} {i.owner_name}: {i.transaction_type} {i.shares} shares "
-            f"at {i.price} on {i.transaction_date} ({i.importance}) {i.source_url}"
-            for i in insiders
+            [
+                f"- {insider_more_count} more insider transactions not shown. "
+                "Use report limits to adjust."
+            ]
+            if insider_more_count
+            else []
         ),
         "",
         "## Unprocessed material filings",
@@ -352,6 +411,11 @@ def generate_daily_brief(
             f"- {h.halt_datetime} {h.ticker} reason_code={h.reason_code} "
             f"reason_text={h.reason_text} resume={h.resume_datetime}"
             for h in halts
+        ),
+        *(
+            [f"- {halts_more_count} more trading halts not shown. Use report limits to adjust."]
+            if halts_more_count
+            else []
         ),
         *(["No trading halts recorded for watchlist tickers."] if not halts else []),
         *(

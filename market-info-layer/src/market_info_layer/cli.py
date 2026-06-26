@@ -7,7 +7,13 @@ import typer
 import yaml
 from sqlalchemy.orm import Session
 
-from market_info_layer.analysis.daily_brief import DEFAULT_MAX_UNPROCESSED, generate_daily_brief
+from market_info_layer.analysis.daily_brief import (
+    DEFAULT_MAX_EVENTS,
+    DEFAULT_MAX_INSIDER_TRANSACTIONS,
+    DEFAULT_MAX_TRADING_HALTS,
+    DEFAULT_MAX_UNPROCESSED,
+    generate_daily_brief,
+)
 from market_info_layer.collectors.fred_macro import collect_macro_observations
 from market_info_layer.collectors.nasdaq_halts import collect_halts
 from market_info_layer.collectors.prices import collect_prices
@@ -156,6 +162,9 @@ def daily_brief(
     brief_date: Annotated[str | None, typer.Option("--date")] = None,
     lookback_days: Annotated[int | None, typer.Option("--lookback-days", min=0)] = None,
     processed_today: Annotated[bool, typer.Option("--processed-today")] = False,
+    report_mode: Annotated[
+        Literal["event_date", "processed_at"], typer.Option("--report-mode")
+    ] = "event_date",
     include_low: Annotated[bool, typer.Option("--include-low")] = False,
     output_name: Annotated[str | None, typer.Option("--output-name")] = None,
     style: Annotated[Literal["compact", "debug"], typer.Option("--style")] = "compact",
@@ -163,6 +172,13 @@ def daily_brief(
         int, typer.Option("--max-unprocessed", min=0)
     ] = DEFAULT_MAX_UNPROCESSED,
     debug_price_context: Annotated[bool, typer.Option("--debug-price-context")] = False,
+    max_events: Annotated[int, typer.Option("--max-events", min=0)] = DEFAULT_MAX_EVENTS,
+    max_insider_transactions: Annotated[
+        int, typer.Option("--max-insider-transactions", min=0)
+    ] = DEFAULT_MAX_INSIDER_TRANSACTIONS,
+    max_trading_halts: Annotated[
+        int, typer.Option("--max-trading-halts", min=0)
+    ] = DEFAULT_MAX_TRADING_HALTS,
 ) -> None:
     create_db()
     parsed_date = date.fromisoformat(brief_date) if brief_date else None
@@ -173,11 +189,15 @@ def daily_brief(
                 brief_date=parsed_date,
                 lookback_days=lookback_days,
                 processed_today=processed_today,
+                report_mode=report_mode,
                 include_low=include_low,
                 output_name=output_name,
                 style=style,
                 max_unprocessed=max_unprocessed,
                 debug_price_context=debug_price_context,
+                max_events=max_events,
+                max_insider_transactions=max_insider_transactions,
+                max_trading_halts=max_trading_halts,
             )
         )
 
@@ -195,7 +215,7 @@ def backfill_review(
             generate_daily_brief(
                 s,
                 brief_date=parsed_date,
-                processed_today=True,
+                report_mode="processed_at",
                 include_low=include_low,
                 output_name=output_name,
             )

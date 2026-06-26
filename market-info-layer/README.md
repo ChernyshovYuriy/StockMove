@@ -203,3 +203,15 @@ python -m market_info_layer.cli collect-prices --ticker AAPL --period 2y
 ```
 
 The price collector stores one row per ticker, trading date, and source to avoid duplicate rows when the command is rerun. Reports describe price reaction around events as same-period movement requiring human review, not as causation or trading advice.
+
+## Report modes and data-health checks
+
+Daily Markdown reports now distinguish event-date selection from processing/backfill selection:
+
+- `--report-mode event_date` (default) selects filing events whose actual `event_date` falls in the requested date or lookback range. This is the mode to use for a true daily market report.
+- `--report-mode processed_at` selects events created or downloaded during the requested processing window. This is intended for backfill review and is titled **Events Processed During Backfill**.
+- The legacy `--processed-today` flag is treated as processed/backfill mode for compatibility.
+
+Price context is only attached when the event date has a nearby baseline trading price. The default maximum baseline gap is five calendar days, so older SEC events are not paired with the first available price row years later. Reports state when price context is unavailable or incomplete instead of labeling those cases as human-review flags.
+
+Debug exports include expanded `health_checks.json` issues for watchlist SEC coverage, price coverage, latest filing/price/halt rows, unknown Form 4 transaction codes, placeholder watchlist thesis fields, and filing events that predate available price history. Each issue includes a severity such as `OK`, `WARN`, or `ERROR` where applicable.
