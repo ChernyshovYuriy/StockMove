@@ -1,3 +1,4 @@
+# ruff: noqa: E501, E701
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -12,6 +13,7 @@ from market_info_layer.db.models import (
     FilingDocument,
     FilingEvent,
     InsiderTransaction,
+    Price,
     TradingHalt,
     Watchlist,
 )
@@ -144,6 +146,8 @@ def _format_insider_transaction(i: InsiderTransaction) -> str:
     filing_ticker = getattr(i, "filing_ticker", None) or i.ticker
     issuer_ticker = getattr(i, "issuer_ticker", None) or i.ticker
     owner = getattr(i, "reporting_owner_name", None) or i.owner_name or "Unknown owner"
+    security = f" security={getattr(i, 'security_title', None)}" if getattr(i, 'security_title', None) else ""
+    table = f" table={getattr(i, 'transaction_table', None)}" if getattr(i, 'transaction_table', None) else ""
     label = (
         "Insider transaction for watched issuer"
         if issuer_ticker == filing_ticker
@@ -152,7 +156,7 @@ def _format_insider_transaction(i: InsiderTransaction) -> str:
     return (
         f"- {label}: watched={filing_ticker} issuer={issuer_ticker} {owner}: "
         f"{i.transaction_type} {i.shares} shares at {i.price} on {i.transaction_date} "
-        f"({i.importance}) {i.source_url}"
+        f"({i.importance}){security}{table} {i.source_url}"
     )
 
 
@@ -244,16 +248,20 @@ def generate_daily_brief(
     visible_events = [
         e for e in sorted_events if style == "debug" or include_low or not _is_item_901(e)
     ]
-    material_events_all = [e for e in visible_events if include_low or e.importance != "low"]
-    low_events_all = [] if include_low else [e for e in visible_events if e.importance == "low"]
+    earliest_price = {ticker: min(dates) for ticker in {p.ticker for p in session.scalars(select(Price)).all()} for dates in [[p.price_date for p in session.scalars(select(Price).where(Price.ticker == ticker)).all() if p.price_date]] if dates}
+    outside_price_history_events = [e for e in visible_events if e.event_date and earliest_price.get(e.ticker) and e.event_date < earliest_price[e.ticker]]
+    price_window_events = [e for e in visible_events if e not in outside_price_history_events]
+    main_event_pool = [] if processed_today else price_window_events
+    material_events_all = [e for e in main_event_pool if include_low or e.importance != "low"]
+    low_events_all = [] if include_low else [e for e in main_event_pool if e.importance == "low"]
     material_events = material_events_all[:max_events]
     low_events = low_events_all[:max_events]
     omitted_material_events = max(0, len(material_events_all) - len(material_events))
     omitted_low_events = max(0, len(low_events_all) - len(low_events))
-    # Avoid emitting identical filing rows in both parsed and recently processed sections.
-    # The parsed sections remain the canonical event listing; this section is only
-    # populated for future distinct processed-only records.
-    processed_events = []
+    processed_events = [e for e in selected_events if _iso_date(e.created_at) == brief_date] if processed_today else []
+    downloaded_today_count = sum(1 for d in session.scalars(select(FilingDocument)).all() if _iso_date(d.downloaded_at) == brief_date)
+    events_created_today_count = sum(1 for e in session.scalars(select(FilingEvent)).all() if _iso_date(e.created_at) == brief_date)
+    insider_created_today_count = sum(1 for i in session.scalars(select(InsiderTransaction)).all() if _iso_date(i.collected_at) == brief_date)
     insider_importance = ["high", "medium", "low"] if include_low else ["high", "medium"]
     insiders = session.scalars(
         select(InsiderTransaction)
@@ -298,17 +306,21 @@ def generate_daily_brief(
         f"Parsed filing event selection: {selection_text}",
         "",
         "## Summary",
+        f"- Filing documents downloaded on report date: {downloaded_today_count}",
+        f"- Filing events created on report date: {events_created_today_count}",
         f"- Parsed filing events selected: {len(selected_events)}",
+        f"- Insider transactions created on report date: {insider_created_today_count}",
         f"- Material events shown: {len(material_events)} (omitted {omitted_material_events})",
         f"- Low-importance events shown: {len(low_events)} (omitted {omitted_low_events})",
         f"- Insider transactions shown: {len(insiders)} (omitted {insider_more_count})",
         f"- Trading halts shown: {len(halts)} (omitted {halts_more_count})",
+        f"- Events outside price-history window: {len(outside_price_history_events)}",
+        "- Price-context analysis is limited to events on or after the earliest available price date for each ticker.",
         "",
         "## Known facts",
         "## Macro Context",
         *(_format_macro_latest(m) for m in macros),
-        "Interpretation: Not generated in version 1.",
-        "Speculation: None.",
+        *(["Interpretation: Not generated in version 1.", "Speculation: None."] if style == "debug" else []),
         "",
         "## Parsed filing events",
         *(
@@ -357,6 +369,10 @@ def generate_daily_brief(
             if processed_today and not processed_events
             else []
         ),
+        "",
+        "## Events outside price-history window",
+        *(f"- {e.ticker} {e.event_date} {e.event_type}: {_event_summary(e)} Price context unavailable: event predates available price history." for e in outside_price_history_events[:max_events]),
+        *(["- No selected events fall outside available price history."] if not outside_price_history_events else []),
         "",
         "## Insider transactions",
         *(_format_insider_transaction(i) for i in insiders),
@@ -432,16 +448,13 @@ def generate_daily_brief(
         "## Watchlist implications",
         "Known facts:",
         *(f"- {w.ticker}: status={w.status}, confidence={w.confidence}" for w in watch),
-        "Interpretation: Human-maintained thesis fields remain separate from raw facts.",
+        *([f"- {w.ticker}: No watchlist thesis configured for this ticker." for w in watch if not (w.thesis and w.thesis.strip() and not w.thesis.lower().startswith("add "))]),
+        *(["Interpretation: Human-maintained thesis fields remain separate from raw facts."] if style == "debug" else []),
         "",
         "## Items requiring human review",
         "- New filings, data anomalies, and thesis updates.",
         "",
-        "## Open questions",
-        "- Add questions during manual review.",
-        "",
-        "## Notes for postmortem",
-        "- Add notes after market close.",
+        *(["## Open questions", "- Add questions during manual review.", "", "## Notes for postmortem", "- Add notes after market close."] if style == "debug" else []),
     ]
     filename = output_name or brief_date.isoformat()
     path = output_dir / f"{filename}.md"

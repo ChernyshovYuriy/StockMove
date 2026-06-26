@@ -1,3 +1,4 @@
+# ruff: noqa: E501, E701
 from __future__ import annotations
 
 import csv
@@ -82,7 +83,10 @@ def create_debug_export(
         _copy_configs(stage / "config")
         _copy_daily_reports(stage / "daily_reports")
         if include_db:
-            shutil.copy2(db_path, stage / db_path.name)
+            db_dest = stage / db_path.name
+            shutil.copy2(db_path, db_dest)
+            if not include_raw_documents:
+                _sanitize_sqlite_raw_columns(db_dest)
         _write_readme(
             stage / "README_DEBUG_EXPORT.md",
             include_db,
@@ -240,7 +244,8 @@ Intentionally excluded:
 - `.env`, `.venv`, `.git`, API keys, and secrets.
 - The full SQLite database unless `--include-db` is used. Included here: {include_db}.
 - Full raw document/text/XML fields unless `--include-raw-documents` is used.
-  Included here: {include_raw}.
+  Included as separate CSV/raw fields here: {include_raw}.
+- Full SQLite database included: {include_db}. Raw document columns in the copied DB are sanitized: {include_db and not include_raw}.
 
 Inspect CSVs with a spreadsheet, Python, or command-line tools. Inspect `schema.sql`
 with any text editor or SQLite client.
@@ -294,6 +299,7 @@ def _health_checks(
         "latest_dates": {},
         "missing": {},
         "issues": [],
+        "samples": {},
     }
     for table, col in [
         ("filings", "ticker"),
@@ -539,21 +545,21 @@ def _health_checks(
     if _has(tables, columns, "filing_events", "ticker", "event_date") and _has(
         tables, columns, "prices", "ticker", "price_date"
     ):
-        suspicious = [
-            dict(r)
-            for r in conn.execute("""
-            SELECT e.id, e.ticker, e.event_date, MIN(p.price_date) AS min_price_date
-            FROM filing_events e JOIN prices p ON p.ticker = e.ticker
-            WHERE e.event_date IS NOT NULL
-            GROUP BY e.id, e.ticker, e.event_date
-            HAVING date(e.event_date) < date(min_price_date)
-            ORDER BY e.ticker, e.event_date LIMIT 100
-        """)
-        ]
-        checks["issues"].extend(
-            {"severity": "WARN", "code": "event_predates_price_history", **row}
-            for row in suspicious
-        )
+        preprice_sql = """
+            SELECT e.id, e.ticker, e.event_date, m.min_price_date
+            FROM filing_events e
+            JOIN (SELECT ticker, MIN(price_date) AS min_price_date FROM prices GROUP BY ticker) m
+              ON m.ticker = e.ticker
+            WHERE e.event_date IS NOT NULL AND date(e.event_date) < date(m.min_price_date)
+        """
+        total = int(conn.execute(f"SELECT COUNT(*) AS count FROM ({preprice_sql})").fetchone()["count"])
+        by_ticker = [dict(r) for r in conn.execute(f"SELECT q.ticker, COUNT(*) AS count FROM ({preprice_sql}) q GROUP BY q.ticker ORDER BY q.ticker")]
+        sample = [dict(r) for r in conn.execute(preprice_sql + " ORDER BY e.ticker, e.event_date LIMIT 100")]
+        checks["counts"]["event_predates_price_history_total"] = total
+        checks["counts"]["event_predates_price_history_by_ticker"] = by_ticker
+        checks["samples"]["event_predates_price_history"] = sample
+        if total:
+            checks["issues"].append({"severity": "WARN", "code": "event_predates_price_history", "count": total, "by_ticker": by_ticker, "sample_size": len(sample)})
 
     for key, table, col in [
         ("latest_filing_date", "filings", "filing_date"),
@@ -566,3 +572,18 @@ def _health_checks(
                 conn, f"SELECT MAX({_quote_ident(col)}) FROM {_quote_ident(table)}"
             )
     return checks
+
+
+def _sanitize_sqlite_raw_columns(db_copy: Path) -> None:
+    conn = sqlite3.connect(db_copy)
+    conn.row_factory = sqlite3.Row
+    try:
+        for table in _user_tables(conn):
+            cols = [c["name"] for c in _columns(conn, table)]
+            raw_cols = [c for c in cols if _is_raw_column(c)]
+            if raw_cols:
+                assignments = ", ".join(f"{_quote_ident(c)} = NULL" for c in raw_cols)
+                conn.execute(f"UPDATE {_quote_ident(table)} SET {assignments}")
+        conn.commit()
+    finally:
+        conn.close()

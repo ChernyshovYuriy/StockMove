@@ -87,6 +87,13 @@ class InsiderTransaction(Base):
     price: Mapped[float | None] = mapped_column(Float)
     direct_or_indirect: Mapped[str | None] = mapped_column(String)
     shares_owned_after: Mapped[float | None] = mapped_column(Float)
+    security_title: Mapped[str | None] = mapped_column(Text)
+    transaction_table: Mapped[str | None] = mapped_column(String)
+    transaction_row_index: Mapped[int | None] = mapped_column(Integer)
+    footnote_ids: Mapped[str | None] = mapped_column(Text)
+    ownership_form: Mapped[str | None] = mapped_column(String)
+    deemed_execution_date: Mapped[str | None] = mapped_column(String)
+    transaction_hash: Mapped[str | None] = mapped_column(String)
     source_url: Mapped[str] = mapped_column(Text)
     collected_at: Mapped[str] = mapped_column(String)
     importance: Mapped[str | None] = mapped_column(String)
@@ -110,6 +117,7 @@ class FilingEvent(Base):
     importance: Mapped[str | None] = mapped_column(String)
     source_url: Mapped[str] = mapped_column(Text)
     needs_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    event_hash: Mapped[str | None] = mapped_column(String)
     created_at: Mapped[str] = mapped_column(String)
     __table_args__ = (
         Index("ix_filing_events_filing_date_type", "filing_id", "event_date", "event_type"),
