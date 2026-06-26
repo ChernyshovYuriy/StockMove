@@ -45,6 +45,31 @@ FRED_API_KEY=
 
 `SEC_USER_AGENT` should identify your app/contact as expected by SEC access guidance. `FRED_API_KEY` is optional.
 
+
+## End-to-end verification script
+
+Use the verification script to replace the manual command sequence for initializing the database, collecting data, processing SEC filings, generating review reports, and building the debug ZIP for OpenAI analysis. The script prints timestamped progress before and after every command, stops on the first failure, and leaves the final `export-debug` output path visible in the terminal.
+
+```bash
+scripts/run_system_verification.sh
+```
+
+The default workflow runs:
+
+```text
+init-db -> load-watchlist -> collect-sec -> sec-routine -> collect-macro -> collect-halts -> collect-prices -> process-sec-filings -> daily-brief reports -> export-debug --include-db
+```
+
+Common options let you tune the same parameters used in the manual flow:
+
+```bash
+scripts/run_system_verification.sh --process-form-type 8-K --process-limit 50 --lookback-days 730
+scripts/run_system_verification.sh --export-dir export/openai-debug --include-raw-documents
+scripts/run_system_verification.sh --skip-prices --skip-macro --skip-halts
+```
+
+Run `scripts/run_system_verification.sh --help` for the full option list.
+
 ## Example commands
 
 ```bash
