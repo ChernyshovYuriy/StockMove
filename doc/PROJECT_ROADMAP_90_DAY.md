@@ -80,7 +80,7 @@ AI should later help summarize and classify evidence, but only after the raw-dat
 
 ### Block 1 — SEC EDGAR routine
 
-**Status: Mostly complete.**
+**Status: Complete for Week 1 prototype.**
 
 Already implemented:
 
@@ -90,23 +90,25 @@ Already implemented:
 - clean text extraction
 - 8-K item parsing
 - `filing_events`
+- Form 4 insider-transaction parsing into `insider_transactions`
+- unprocessed material-filing review queue in daily briefs
+- `sec-routine` command that collects metadata and processes current 8-K/Form 4 filings
 - reports
 - debug export
 
 Remaining work:
 
-- Process all 8-Ks for current watchlist tickers.
-- Keep improving 8-K event summaries.
-- Add unprocessed-material-filing queue.
-- Add Form 4 parsing.
+- Keep improving 8-K event summaries as new examples appear.
 - Add 13D/13G ownership-change interpretation later.
+- Add deeper 10-Q/10-K extraction later.
 
 Acceptance criteria:
 
-- SEC collection can run daily.
-- New 8-Ks appear in the report.
-- Duplicate filings are prevented.
-- Every filing event links back to source SEC URL.
+- SEC collection can run daily via `python -m market_info_layer.cli sec-routine`.
+- New 8-Ks appear in the report after processing.
+- Duplicate filings and duplicate insider transactions are prevented.
+- Every filing event and insider transaction links back to a source SEC URL.
+- Unprocessed material filings appear in the daily brief review queue.
 
 ---
 
@@ -609,27 +611,17 @@ Deliverables:
 
 ## Immediate next action
 
-Implement Stage 4:
+Continue Week 1 unfinished blocks now that the SEC EDGAR routine is complete for prototype use.
 
-> Form 4 insider transaction parsing
+## Next after SEC Block 1
 
-Because Form 4 metadata already exists:
 
-```text
-Form 4 filings collected: 589
-insider_transactions: 0
-```
-
-This is a natural completion of Week 1 SEC evidence.
-
-## After Form 4
-
-Continue Week 1 unfinished blocks:
-
-1. Short-interest checks.
-2. One reliable press-release/news feed.
-3. Optional options context.
-4. Daily checklist and watchlist review workflow.
+1. Run `sec-routine` during daily review and monitor the unprocessed material-filing queue.
+2. Expand price collection from AAPL to all watchlist tickers.
+3. Short-interest checks.
+4. One reliable press-release/news feed.
+5. Optional options context.
+6. Daily checklist and watchlist review workflow.
 
 ## Do not do yet
 

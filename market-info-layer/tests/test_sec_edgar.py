@@ -81,3 +81,84 @@ tickers:
         assert collect_sec_filings(session, watch, delay_seconds=0) == 1
         assert collect_sec_filings(session, watch, delay_seconds=0) == 0
         assert session.query(Filing).count() == 1
+
+
+
+def test_sec_routine_collects_and_processes_8k_and_form4(monkeypatch, tmp_path):
+    from typer.testing import CliRunner
+
+    from market_info_layer import cli
+    from market_info_layer.collectors import sec_documents
+    from market_info_layer.db.models import FilingEvent, InsiderTransaction
+
+    form4_xml = """<?xml version=\"1.0\"?>
+<ownershipDocument>
+  <issuer><issuerTradingSymbol>ABC</issuerTradingSymbol></issuer>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Jane Insider</rptOwnerName></reportingOwnerId>
+  </reportingOwner>
+  <nonDerivativeTable><nonDerivativeTransaction>
+    <transactionDate><value>2026-06-20</value></transactionDate>
+    <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+    <transactionAmounts><transactionShares><value>1500</value></transactionShares><transactionPricePerShare><value>10.50</value></transactionPricePerShare></transactionAmounts>
+    <postTransactionAmounts><sharesOwnedFollowingTransaction><value>2500</value></sharesOwnedFollowingTransaction></postTransactionAmounts>
+    <ownershipNature><directOrIndirectOwnership><value>D</value></directOrIndirectOwnership></ownershipNature>
+  </nonDerivativeTransaction></nonDerivativeTable>
+</ownershipDocument>
+"""
+
+    db_url = f"sqlite:///{tmp_path / 'sec-routine.db'}"
+    monkeypatch.setenv("DATABASE_URL", db_url)
+    monkeypatch.setattr(cli, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(cli, "create_db", lambda: init_db(db_url))
+    monkeypatch.setattr(cli, "get_engine", lambda: get_engine(db_url))
+    monkeypatch.setattr(
+        cli,
+        "collect_sec_filings",
+        lambda session: session.add_all(
+            [
+                Filing(
+                    ticker="ABC",
+                    cik="0000000001",
+                    form_type="8-K",
+                    filing_date="2026-06-20",
+                    report_date="2026-06-20",
+                    accession_number="8k-1",
+                    primary_document="doc.htm",
+                    filing_url="https://www.sec.gov/Archives/doc.htm",
+                    source="SEC EDGAR submissions",
+                    collected_at="2026-06-20T00:00:00Z",
+                ),
+                Filing(
+                    ticker="ABC",
+                    cik="0000000001",
+                    form_type="4",
+                    filing_date="2026-06-20",
+                    report_date="2026-06-20",
+                    accession_number="form4-1",
+                    primary_document="doc.xml",
+                    filing_url="https://www.sec.gov/Archives/doc.xml",
+                    source="SEC EDGAR submissions",
+                    collected_at="2026-06-20T00:00:00Z",
+                ),
+            ]
+        )
+        or session.commit()
+        or 2,
+    )
+
+    def fake_download(url):
+        if url.endswith("doc.xml"):
+            return form4_xml
+        return "Item 5.02 Departure of Directors or Certain Officers. The CFO resigned."
+
+    monkeypatch.setattr(sec_documents, "download_filing_document", fake_download)
+    result = CliRunner().invoke(cli.app, ["sec-routine", "--limit-per-form", "10"])
+
+    assert result.exit_code == 0
+    assert "processed 1 8-K filings" in result.output
+    assert "processed 1 Form 4 filings" in result.output
+    with Session(get_engine(db_url)) as session:
+        assert session.query(FilingEvent).count() == 1
+        assert session.query(InsiderTransaction).count() == 1
+        assert session.query(Filing).filter_by(processed=True).count() == 2
