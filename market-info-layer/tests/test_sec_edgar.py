@@ -162,3 +162,49 @@ def test_sec_routine_collects_and_processes_8k_and_form4(monkeypatch, tmp_path):
         assert session.query(FilingEvent).count() == 1
         assert session.query(InsiderTransaction).count() == 1
         assert session.query(Filing).filter_by(processed=True).count() == 2
+
+
+def test_form4_xsl_primary_document_is_rewritten_to_raw_xml():
+    from market_info_layer.collectors.sec_edgar import parse_recent_filings
+
+    payload = {"filings": {"recent": {
+        "form": ["4"],
+        "accessionNumber": ["0000000001-26-000001"],
+        "filingDate": ["2026-06-20"],
+        "reportDate": ["2026-06-20"],
+        "primaryDocument": ["xslF345X06/ownership.xml"],
+    }}}
+
+    row = parse_recent_filings("ABC", "1", payload)[0]
+
+    assert row["primary_document"] == "ownership.xml"
+    assert "xslF345X06" not in row["filing_url"]
+    assert row["filing_url"].endswith("/ownership.xml")
+
+
+def test_collect_sec_filings_attempts_every_watchlist_ticker(tmp_path, monkeypatch, caplog):
+    db_url = f"sqlite:///{tmp_path / 'all.db'}"
+    init_db(db_url)
+    watch = tmp_path / "watchlist.yaml"
+    watch.write_text("""
+tickers:
+  - ticker: AAPL
+    cik: '320193'
+  - ticker: CEG
+    cik: '1868275'
+  - ticker: LULU
+    cik: '1397187'
+  - ticker: NOCIK
+n""".replace("\nn", "\n"))
+    seen = []
+
+    def fake_fetch(cik):
+        seen.append(cik)
+        return {"filings": {"recent": {"form": []}}}
+
+    monkeypatch.setattr("market_info_layer.collectors.sec_edgar.fetch_submissions", fake_fetch)
+    with Session(get_engine(db_url)) as session:
+        assert collect_sec_filings(session, watch, delay_seconds=0) == 0
+
+    assert seen == ["320193", "1868275", "1397187"]
+    assert "no CIK mapping" in caplog.text

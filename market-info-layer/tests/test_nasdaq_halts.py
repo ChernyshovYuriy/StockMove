@@ -229,3 +229,29 @@ def test_collect_halts_oops_response_fails_clearly(tmp_path, monkeypatch):
     with Session(get_engine(db_url)) as session:
         with pytest.raises(HaltFetchError, match="non-RSS content"):
             collect_halts(session)
+
+
+def test_parse_halts_rss_overnight_resume_rolls_to_next_day():
+    rss = """<rss><channel><item>
+    <title>Trade Halt - XYZ</title><pubDate>Tue, 02 Jan 2024 23:00:00 -0500</pubDate>
+    <description>Issue Symbol: XYZ | Halt Time: 23:55:00 | Resume Time: 00:10:00 |
+    Reason Code: T1</description>
+    </item></channel></rss>"""
+
+    row = parse_halts_rss(rss)[0]
+
+    assert row["halt_datetime"] == "2024-01-02T23:55:00 America/New_York"
+    assert row["resume_datetime"] == "2024-01-03T00:10:00 America/New_York"
+
+
+def test_parse_halts_rss_invalid_resume_time_stays_unresolved():
+    rss = """<rss><channel><item>
+    <title>Trade Halt - XYZ</title><pubDate>Tue, 02 Jan 2024 15:00:00 -0500</pubDate>
+    <description>Issue Symbol: XYZ | Halt Time: 13:00:00 | Resume Time: TBD |
+    Reason Code: T1</description>
+    </item></channel></rss>"""
+
+    row = parse_halts_rss(rss)[0]
+
+    assert row["resume_time"] == "TBD"
+    assert row["resume_datetime"] is None

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
@@ -160,7 +160,21 @@ def _split_halt_datetime(value: str | None, fallback_date: str) -> tuple[str, st
 def _build_datetime(halt_date: str | None, time_value: str | None) -> str | None:
     if not halt_date or not time_value:
         return None
+    if _time_for_compare(time_value) is None:
+        return None
     return f"{halt_date}T{time_value} {HALT_TIMEZONE}"
+
+
+def _time_for_compare(time_value: str | None) -> datetime | None:
+    if not time_value:
+        return None
+    try:
+        return datetime.strptime(time_value.split(".", 1)[0], "%H:%M:%S")
+    except ValueError:
+        try:
+            return datetime.strptime(time_value, "%H:%M")
+        except ValueError:
+            return None
 
 
 def _reason_text(reason_code: str | None, source_text: str | None) -> str | None:
@@ -178,14 +192,17 @@ def _enrich_row(
 ) -> dict[str, str | None]:
     fallback = fallback_date or datetime.now(UTC).date().isoformat()
     halt_date, halt_time = _split_halt_datetime(row.get("halt_time"), fallback)
-    _, resume_time = _split_halt_datetime(row.get("resume_time"), halt_date)
+    resume_date, resume_time = _split_halt_datetime(row.get("resume_time"), halt_date)
+    if resume_date == halt_date and _time_for_compare(resume_time) and _time_for_compare(halt_time):
+        if _time_for_compare(resume_time) < _time_for_compare(halt_time):
+            resume_date = (datetime.fromisoformat(halt_date) + timedelta(days=1)).date().isoformat()
     row = dict(row)
     row["halt_date"] = halt_date
     row["halt_time"] = halt_time
     row["resume_time"] = resume_time
     row["timezone"] = HALT_TIMEZONE
     row["halt_datetime"] = _build_datetime(halt_date, halt_time)
-    row["resume_datetime"] = _build_datetime(halt_date, resume_time)
+    row["resume_datetime"] = _build_datetime(resume_date, resume_time)
     row["reason_text"] = _reason_text(row.get("reason_code"), row.get("reason_text"))
     return row
 

@@ -496,3 +496,47 @@ def test_form4_duplicate_prevention(monkeypatch, tmp_path):
         session.commit()
         assert process_sec_filings(session, limit=10, form_type="4") == 1
         assert session.query(InsiderTransaction).count() == 1
+
+
+def test_unsupported_material_filing_marked_explicitly(tmp_path):
+    with _session(tmp_path) as session:
+        filing = _filing("10-Q", "0010")
+        session.add(filing)
+        session.commit()
+
+        assert process_sec_filings(session, limit=10, form_type="10-Q") == 1
+
+        refreshed = session.get(Filing, filing.id)
+        assert refreshed.processed is True
+        assert refreshed.processing_status == "unsupported_type"
+        assert session.query(FilingDocument).count() == 0
+
+
+def test_processed_today_report_does_not_duplicate_filing_event(tmp_path):
+    from datetime import date
+
+    from market_info_layer.analysis.daily_brief import generate_daily_brief
+
+    with _session(tmp_path) as session:
+        session.add(
+            FilingEvent(
+                filing_id=1,
+                ticker="ABC",
+                form_type="8-K",
+                event_date="2026-06-20",
+                event_type="Other events",
+                sec_item="Item 8.01",
+                headline="Other events",
+                summary="Company update",
+                importance="medium",
+                source_url="https://sec/x",
+                needs_human_review=False,
+                created_at="2026-06-20T12:00:00Z",
+            )
+        )
+        session.commit()
+        path = generate_daily_brief(
+            session, output_dir=tmp_path, brief_date=date(2026, 6, 20), processed_today=True
+        )
+        text = path.read_text()
+        assert text.count("[medium] ABC — 2026-06-20 — Item 8.01") == 1

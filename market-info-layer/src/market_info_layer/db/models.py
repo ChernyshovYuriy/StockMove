@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Float, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -45,12 +45,17 @@ class Filing(Base):
     source: Mapped[str] = mapped_column(String)
     collected_at: Mapped[str] = mapped_column(String)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
+    processing_status: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (
+        Index("ix_filings_ticker_filing_date", "ticker", "filing_date"),
+        Index("ix_filings_accession_number", "accession_number"),
+    )
 
 
 class FilingDocument(Base):
     __tablename__ = "filing_documents"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    filing_id: Mapped[int] = mapped_column(Integer, unique=True)
+    filing_id: Mapped[int] = mapped_column(Integer, ForeignKey("filings.id"), unique=True)
     ticker: Mapped[str | None] = mapped_column(String)
     form_type: Mapped[str | None] = mapped_column(String)
     source_url: Mapped[str] = mapped_column(Text)
@@ -65,7 +70,7 @@ class FilingDocument(Base):
 class InsiderTransaction(Base):
     __tablename__ = "insider_transactions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    filing_id: Mapped[int] = mapped_column(Integer)
+    filing_id: Mapped[int] = mapped_column(Integer, ForeignKey("filings.id"))
     ticker: Mapped[str] = mapped_column(String)
     owner_name: Mapped[str | None] = mapped_column(Text)
     owner_role: Mapped[str | None] = mapped_column(Text)
@@ -79,12 +84,16 @@ class InsiderTransaction(Base):
     source_url: Mapped[str] = mapped_column(Text)
     collected_at: Mapped[str] = mapped_column(String)
     importance: Mapped[str | None] = mapped_column(String)
+    __table_args__ = (
+        Index("ix_insider_ticker_transaction_date", "ticker", "transaction_date"),
+        Index("ix_insider_owner_name", "owner_name"),
+    )
 
 
 class FilingEvent(Base):
     __tablename__ = "filing_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    filing_id: Mapped[int] = mapped_column(Integer)
+    filing_id: Mapped[int] = mapped_column(Integer, ForeignKey("filings.id"))
     ticker: Mapped[str] = mapped_column(String)
     form_type: Mapped[str] = mapped_column(String)
     event_date: Mapped[str | None] = mapped_column(String)
@@ -96,6 +105,9 @@ class FilingEvent(Base):
     source_url: Mapped[str] = mapped_column(Text)
     needs_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(String)
+    __table_args__ = (
+        Index("ix_filing_events_filing_date_type", "filing_id", "event_date", "event_type"),
+    )
 
 
 class MacroEvent(Base):
@@ -137,6 +149,7 @@ class TradingHalt(Base):
     collected_at: Mapped[str] = mapped_column(String)
     __table_args__ = (
         UniqueConstraint("ticker", "halt_datetime", "reason_code", name="uq_trading_halt"),
+        Index("ix_trading_halts_ticker_halt_date", "ticker", "halt_date"),
     )
 
 

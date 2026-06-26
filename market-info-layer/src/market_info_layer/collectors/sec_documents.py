@@ -15,6 +15,8 @@ from market_info_layer.settings import get_settings
 from market_info_layer.utils.rate_limit import sleep_for
 from market_info_layer.utils.time import utc_now_iso
 
+SUPPORTED_PROCESSING_FORMS = {"8-K", "4"}
+
 _BLOCK_TAGS = {
     "address",
     "article",
@@ -343,6 +345,12 @@ def process_sec_filings(
     filings = session.scalars(stmt.limit(limit)).all()
     processed = 0
     for filing in filings:
+        if filing.form_type not in SUPPORTED_PROCESSING_FORMS:
+            filing.processed = True
+            filing.processing_status = "unsupported_type"
+            session.commit()
+            processed += 1
+            continue
         existing = session.scalar(
             select(FilingDocument.id).where(FilingDocument.filing_id == filing.id)
         )
@@ -381,8 +389,10 @@ def process_sec_filings(
                 if not xml:
                     raise Form4ParseError("downloaded document is not raw Form 4 ownership XML")
                 store_form4_transactions(session, filing.id, xml, download.final_url, filing.ticker)
+                filing.processing_status = "parsed"
             except Form4ParseError as exc:
                 _record_unparseable_form4(session, filing, download.final_url, str(exc))
+                filing.processing_status = "parser_failed"
         elif filing.form_type == "8-K":
             store_8k_events(
                 session,
@@ -393,6 +403,7 @@ def process_sec_filings(
                 download.final_url,
                 filing.filing_date,
             )
+            filing.processing_status = "parsed"
         filing.processed = True
         processed += 1
         session.commit()

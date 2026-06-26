@@ -1,3 +1,4 @@
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -13,10 +14,24 @@ from market_info_layer.utils.time import utc_now_iso
 
 FORMS = {"8-K", "10-Q", "10-K", "S-1", "424B", "DEF 14A", "4", "SC 13D", "SC 13G"}
 SEC_SOURCE = "SEC EDGAR submissions"
+logger = logging.getLogger(__name__)
 
 
 def pad_cik(cik: str | int) -> str:
     return str(cik).strip().zfill(10)
+
+
+def raw_primary_document(form_type: str, primary_document: str | None) -> str | None:
+    """Return the archive document path that should be downloaded.
+
+    SEC Form 4 recent filings sometimes advertise a rendered xslF345X.. path as
+    the primary document. The raw ownership XML lives in the same accession
+    directory under the basename, so avoid storing/downloading the transformed
+    view.
+    """
+    if form_type == "4" and primary_document and "xslf345" in primary_document.lower():
+        return primary_document.rsplit("/", 1)[-1]
+    return primary_document
 
 
 def filing_url(cik: str, accession_number: str, primary_document: str | None) -> str:
@@ -48,7 +63,7 @@ def parse_recent_filings(ticker: str, cik: str, payload: dict[str, Any]) -> list
         if form_type not in FORMS:
             continue
         accession = recent.get("accessionNumber", [])[i]
-        primary_doc = (recent.get("primaryDocument") or [None])[i]
+        primary_doc = raw_primary_document(form_type, (recent.get("primaryDocument") or [None])[i])
         rows.append(
             {
                 "ticker": ticker.upper(),
@@ -72,9 +87,13 @@ def collect_sec_filings(
     inserted = 0
     for item in read_watchlist(watchlist_path):
         if not item.get("cik"):
+            logger.warning("Skipping SEC collection for %s: no CIK mapping", item.get("ticker"))
             continue
         payload = fetch_submissions(item["cik"])
-        for row in parse_recent_filings(item["ticker"], item["cik"], payload):
+        rows = parse_recent_filings(item["ticker"], item["cik"], payload)
+        if not rows:
+            logger.info("No supported SEC filings found for %s", item.get("ticker"))
+        for row in rows:
             exists = session.scalar(
                 select(Filing.id).where(Filing.accession_number == row["accession_number"])
             )
