@@ -9,6 +9,7 @@ This project is for research and journaling only. It is not financial advice and
 - Initializes a local SQLite database.
 - Loads a YAML watchlist.
 - Collects deterministic SEC EDGAR filing metadata for watchlist tickers.
+- Runs a daily SEC routine that processes current 8-Ks into filing events and Form 4s into insider transactions.
 - Collects configured FRED macro observations.
 - Collects current Nasdaq trading halt data defensively from the Nasdaq Trade Halt RSS feed intended for applications.
 - Generates a daily Markdown brief, with optional backfill/review modes for recently processed filings.
@@ -50,6 +51,7 @@ FRED_API_KEY=
 python -m market_info_layer.cli init-db
 python -m market_info_layer.cli load-watchlist
 python -m market_info_layer.cli collect-sec
+python -m market_info_layer.cli sec-routine
 python -m market_info_layer.cli collect-macro
 python -m market_info_layer.cli collect-halts
 python -m market_info_layer.cli collect-all
@@ -135,6 +137,7 @@ After collecting SEC filing metadata with `collect-sec`, parse selected filing d
 python -m market_info_layer.cli process-sec-filings --limit 50
 python -m market_info_layer.cli process-sec-filings --form-type 4 --limit 50
 python -m market_info_layer.cli process-sec-filings --form-type 8-K --limit 20
+python -m market_info_layer.cli sec-routine --limit-per-form 500
 ```
 
 The processor preserves the original `filings` rows, downloads each primary SEC document once into `filing_documents`, and stores interpreted data separately in `insider_transactions` and `filing_events`. All downloaded and parsed rows retain the SEC source URL and source `filing_id`. HTML filings also keep the exact downloaded HTML in `filing_documents.raw_html` for audit review, while `filing_documents.raw_text` contains cleaned visible text with inline-XBRL metadata stripped.

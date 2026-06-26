@@ -125,9 +125,27 @@ def collect_prices_command(
         typer.echo(f"Inserted {count} prices")
 
 
+@app.command("sec-routine")
+def sec_routine(
+    limit_per_form: Annotated[int, typer.Option("--limit-per-form", min=1)] = 500,
+) -> None:
+    """Run the daily SEC metadata and document-processing routine."""
+    create_db()
+    with session() as s:
+        inserted = collect_sec_filings(s)
+        processed_8k = process_sec_filings(s, limit=limit_per_form, form_type="8-K")
+        processed_form4 = process_sec_filings(s, limit=limit_per_form, form_type="4")
+    typer.echo(
+        "SEC routine complete: "
+        f"inserted {inserted} filing metadata rows; "
+        f"processed {processed_8k} 8-K filings; "
+        f"processed {processed_form4} Form 4 filings"
+    )
+
+
 @app.command("collect-all")
 def collect_all() -> None:
-    collect_sec()
+    sec_routine()
     collect_macro()
     collect_halts_command()
     collect_prices_command()

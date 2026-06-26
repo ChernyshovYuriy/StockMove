@@ -42,7 +42,7 @@ Because the original blocks were not formally numbered, this document defines th
 
 ### Block 1 — SEC EDGAR routine
 
-**Status: Complete enough for prototype.**
+**Status: Complete for Week 1 prototype.**
 
 Implemented:
 
@@ -51,6 +51,9 @@ Implemented:
 - 8-K document download
 - cleaned SEC HTML/inline-XBRL text extraction
 - 8-K item parsing into normalized `filing_events`
+- Form 4 insider-transaction parsing into normalized `insider_transactions`
+- unprocessed material-filing queue in daily briefs
+- `sec-routine` command for daily SEC collection plus 8-K/Form 4 processing
 - duplicate prevention
 - source URL preservation
 - debug export verification
@@ -69,7 +72,7 @@ Latest verified state:
 
 Remaining SEC work:
 
-- Form 4 insider transactions are collected as metadata but not yet normalized.
+- Keep improving 8-K event summaries as new filing patterns appear.
 - 10-Q/10-K deeper extraction is not yet implemented.
 - 13D/13G ownership-change interpretation is not yet implemented.
 
@@ -195,6 +198,7 @@ The system now has a working local evidence pipeline:
 SEC filings
   -> cleaned filing documents
   -> parsed 8-K events
+  -> parsed Form 4 insider transactions
   -> macro context
   -> trading halt context
   -> price/volume context
@@ -216,13 +220,13 @@ The right next step is:
 
 Immediate next work:
 
-1. Form 4 insider transaction parsing.
+1. Run `sec-routine` as the daily SEC review command and monitor the unprocessed material-filing queue.
 2. Expand price collection from AAPL to watchlist tickers.
 3. Add short-interest source/check.
 4. Add one carefully chosen news/press-release feed.
 5. Add one options-data source, or explicitly defer it if reliable data requires payment.
 6. Create a daily operating checklist.
-7. Create `PROJECT_STATE.md` in the Git repo and update it after each milestone.
+7. Update `PROJECT_STATE.md` after each milestone.
 
 ---
 
@@ -232,7 +236,7 @@ Immediate next work:
 Plan:        Ninety-day plan for interpreting unexpected stock moves
 Phase:       Month 1 / Week 1
 Focus:       Build the information layer
-Status:      SEC + macro + halt + price context working at prototype level
+Status:      SEC Block 1 complete for prototype; macro + halt + price context working at prototype level
 Next:        Finish remaining Week 1 sources and workflow
 Risk:        Avoid overbuilding before the daily process is usable
 ```
