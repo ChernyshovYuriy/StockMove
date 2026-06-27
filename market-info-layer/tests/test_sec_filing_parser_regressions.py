@@ -78,3 +78,36 @@ def test_risk_factor_material_changes_positive_flagged(tmp_path):
         "in our Annual Report on Form 10-K.",
     )
     assert "risk_factor_update" in types
+
+
+def test_material_weakness_internal_control_not_effective_flagged(tmp_path):
+    types, _ = _events_for(
+        tmp_path,
+        ("Management concluded that internal control over financial reporting "
+         "was not effective as of year end."),
+    )
+    assert "material_weakness" in types
+
+
+def test_material_weakness_audit_risk_assessment_boilerplate_not_flagged(tmp_path):
+    types, summaries = _events_for(
+        tmp_path,
+        ("Our audit included assessing the risk that a material weakness exists "
+         "and obtaining reasonable assurance."),
+    )
+    assert "material_weakness" not in types
+    assert "importance=high" not in "\n".join(summaries)
+
+
+def test_material_weakness_effective_controls_boilerplate_not_flagged(tmp_path):
+    types, _ = _events_for(
+        tmp_path,
+        ("The Company maintained effective internal control over financial reporting "
+         "in all material respects."),
+    )
+    assert "material_weakness" not in types
+
+
+def test_material_weakness_no_weaknesses_identified_not_flagged(tmp_path):
+    types, _ = _events_for(tmp_path, "No material weaknesses were identified during the period.")
+    assert "material_weakness" not in types

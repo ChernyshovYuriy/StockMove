@@ -27,6 +27,28 @@ DEFAULT_MAX_UNPROCESSED = 10
 DEFAULT_MAX_EVENTS = 25
 DEFAULT_MAX_INSIDER_TRANSACTIONS = 25
 DEFAULT_MAX_TRADING_HALTS = 25
+WATCHLIST_PLACEHOLDER_PREFIXES = ("example ", "add ")
+
+
+def _is_placeholder_text(value: str | None) -> bool:
+    return bool(value and value.strip().lower().startswith(WATCHLIST_PLACEHOLDER_PREFIXES))
+
+
+def _has_real_watchlist_thesis(watch: Watchlist) -> bool:
+    return bool(watch.thesis and watch.thesis.strip() and not _is_placeholder_text(watch.thesis))
+
+
+def _failure_stage(error: str | None, status: str | None = None) -> str:
+    text = f"{status or ''} {error or ''}".lower()
+    if any(marker in text for marker in ("name resolution", "temporary failure in name resolution", "failed to resolve", "dns", "nodename nor servname")):
+        return "dns"
+    if any(marker in text for marker in ("rate limit", "too many requests", "429", "request rate threshold")):
+        return "sec_rate_limit"
+    if "parse" in text:
+        return "parse"
+    if any(marker in text for marker in ("http", "status", "connection", "timeout", "ssl")):
+        return "http"
+    return "unknown"
 
 
 def _iso_date(value: str | None) -> date | None:
@@ -120,6 +142,14 @@ def _format_event_compact(
         f"Summary: {_event_summary(event)}\n"
         f"Source: {event.source_url}"
         f"{price_context}"
+    )
+
+
+def _format_event_headline(event: FilingEvent) -> str:
+    return (
+        f"- [{event.importance or 'unknown'}] {event.ticker} "
+        f"event_date={event.event_date or 'unknown'} "
+        f"event_type={event.event_type or 'n/a'}: {_event_summary(event)}"
     )
 
 
@@ -251,17 +281,25 @@ def generate_daily_brief(
     earliest_price = {ticker: min(dates) for ticker in {p.ticker for p in session.scalars(select(Price)).all()} for dates in [[p.price_date for p in session.scalars(select(Price).where(Price.ticker == ticker)).all() if p.price_date]] if dates}
     outside_price_history_events = [e for e in visible_events if e.event_date and earliest_price.get(e.ticker) and e.event_date < earliest_price[e.ticker]]
     price_window_events = [e for e in visible_events if e not in outside_price_history_events]
-    main_event_pool = [] if processed_today else price_window_events
+    main_event_pool = visible_events if report_mode == "processed_at" or processed_today else price_window_events
     material_events_all = [e for e in main_event_pool if include_low or e.importance != "low"]
     low_events_all = [] if include_low else [e for e in main_event_pool if e.importance == "low"]
     material_events = material_events_all[:max_events]
     low_events = low_events_all[:max_events]
     omitted_material_events = max(0, len(material_events_all) - len(material_events))
     omitted_low_events = max(0, len(low_events_all) - len(low_events))
-    processed_events = [e for e in selected_events if _iso_date(e.created_at) == brief_date] if processed_today else []
     downloaded_today_count = sum(1 for d in session.scalars(select(FilingDocument)).all() if _iso_date(d.downloaded_at) == brief_date)
     events_created_today_count = sum(1 for e in session.scalars(select(FilingEvent)).all() if _iso_date(e.created_at) == brief_date)
     insider_created_today_count = sum(1 for i in session.scalars(select(InsiderTransaction)).all() if _iso_date(i.collected_at) == brief_date)
+    failed_filings = [f for f in session.scalars(select(Filing)).all() if (f.processing_status or "").endswith("failed") or f.processing_status == "download_failed"]
+    failure_counts: dict[str, int] = {}
+    retry_candidates = 0
+    for f in failed_filings:
+        stage = _failure_stage(f.processing_error, f.processing_status)
+        failure_counts[stage] = failure_counts.get(stage, 0) + 1
+        if stage in {"dns", "http", "sec_rate_limit", "unknown"}:
+            retry_candidates += 1
+    failure_lines = [f"- {stage}: {count}" for stage, count in sorted(failure_counts.items())]
     insider_importance = ["high", "medium", "low"] if include_low else ["high", "medium"]
     insider_stmt = (
         select(InsiderTransaction)
@@ -293,16 +331,18 @@ def generate_daily_brief(
     if report_mode == "processed_at":
         selection_text = f"created_at or downloaded_at date={brief_date.isoformat()}"
     is_backfill_mode = report_mode == "processed_at"
-    report_title = (
-        "Events Processed During Backfill"
-        if is_backfill_mode
-        else "Events by Event Date"
-    )
-    top_heading = (
-        "## Top backfilled events processed during this run"
-        if is_backfill_mode
-        else "## Top changes for selected event window"
-    )
+    report_title = "Events Processed During Backfill" if is_backfill_mode else "Events by Event Date"
+    top_heading = "## Top material events processed in this run" if is_backfill_mode else "## Top changes for selected event window"
+    event_section_heading = "## Events processed in this run" if is_backfill_mode else "## Parsed filing events"
+    appendix_heading = "## Full processed-event appendix" if is_backfill_mode else "## Full selected-event appendix"
+    appendix_path = None
+    if len(visible_events) > max_events:
+        filename_base = output_name or brief_date.isoformat()
+        appendix_path = output_dir / f"{filename_base}-events.md"
+        appendix_path.write_text("\n".join([appendix_heading, "", *(
+            _format_event(session, e, style, include_low=True, debug_price_context=debug_price_context)
+            for e in visible_events
+        )]) + "\n")
     price_warning_lines = []
     if outside_price_history_events:
         by_ticker = {}
@@ -332,16 +372,23 @@ def generate_daily_brief(
         f"Report style: {style}",
         f"Report mode: {report_mode}",
         f"Parsed filing event selection: {selection_text}",
+        f"Main event display limit: {max_events}",
         "",
         top_heading,
-        *(_format_event(session, e, style, include_low=include_low, debug_price_context=debug_price_context) for e in material_events[:5] if e.importance != "low"),
-        *(["- No material watchlist filing events dated today."] if not [e for e in material_events if e.importance != "low"] else []),
+        *(_format_event_headline(e) for e in material_events[: min(5, max_events)] if e.importance != "low"),
+        *(["- No material/significant filing events selected for this processing run."] if is_backfill_mode and not [e for e in material_events if e.importance != "low"] else []),
+        *(["- No material watchlist filing events in the selected event-date window."] if not is_backfill_mode and not [e for e in material_events if e.importance != "low"] else []),
         "",
         "## Watchlist impact",
         *(f"- {w.ticker}: status={w.status}, confidence={w.confidence}" for w in watch),
         "",
         "## Data quality warnings",
         *price_warning_lines,
+        "",
+        "## Filing processing failures",
+        *(failure_lines or ["- No filing processing failures recorded."]),
+        f"- Retry candidates: {retry_candidates}",
+        "- DNS/name-resolution failures are download-stage failures, not parser failures.",
         "",
         "## Human-review queue",
         *(f"- Material filing review: {f.ticker} {f.form_type} filed {f.filing_date} status={f.processing_status or 'unknown'}. Source: {f.filing_url}" for f in review_filings),
@@ -363,7 +410,7 @@ def generate_daily_brief(
         *(_format_macro_latest(m) for m in macros),
         *(["Interpretation: Not generated in version 1.", "Speculation: None."] if style == "debug" else []),
         "",
-        "## Parsed filing events",
+        event_section_heading,
         *(
             _format_event(
                 session,
@@ -374,7 +421,9 @@ def generate_daily_brief(
             )
             for e in material_events
         ),
-        *(["- No parsed filing events for this selection."] if not material_events else []),
+        *(["- No filing events selected for this processing run."] if is_backfill_mode and not material_events else []),
+        *(["- No parsed filing events for this event-date selection."] if not is_backfill_mode and not material_events else []),
+        *([f"- {omitted_material_events} more material/significant events omitted from the main report. See {appendix_path.name} for the full selected-event list."] if appendix_path and omitted_material_events else []),
         "",
         "## Low-importance parsed filing events",
         *(
@@ -389,27 +438,9 @@ def generate_daily_brief(
         ),
         *(["- No low-importance parsed filing events."] if not low_events else []),
         "",
-        "## Recently processed filing events",
-        *(
-            _format_event(
-                session,
-                e,
-                style,
-                include_low=include_low,
-                debug_price_context=debug_price_context,
-            )
-            for e in processed_events
-        ),
-        *(
-            ["- Not requested. Use --processed-today to populate this section."]
-            if not processed_today
-            else []
-        ),
-        *(
-            ["- No filing events were created on the report date."]
-            if processed_today and not processed_events
-            else []
-        ),
+        appendix_heading,
+        *([f"- Full selected-event details written to `{appendix_path.name}`."] if appendix_path else []),
+        *(["- Full selected-event list fits in the sections above."] if not appendix_path else []),
         "",
         "## Events outside price-history window",
         *(f"- {e.ticker} {e.event_date} {e.event_type}: {_event_summary(e)} Price context unavailable: event predates available price history." for e in outside_price_history_events[:max_events]),
@@ -489,8 +520,8 @@ def generate_daily_brief(
         "## Watchlist implications",
         "Known facts:",
         *(f"- {w.ticker}: status={w.status}, confidence={w.confidence}" for w in watch),
-        *([f"- {w.ticker}: Watchlist thesis/catalyst fields are placeholders and should not be treated as meaningful." for w in watch if any((getattr(w, field) or '').startswith('Example ') for field in ('reason_watching', 'thesis', 'invalidation_condition', 'catalyst'))]),
-        *([f"- {w.ticker}: No watchlist thesis configured for this ticker." for w in watch if not (w.thesis and w.thesis.strip() and not w.thesis.lower().startswith("add ") and not w.thesis.startswith('Example '))]),
+        *([f"- {w.ticker}: Watchlist thesis/catalyst fields are placeholders and are excluded from implications until configured." for w in watch if any(_is_placeholder_text(getattr(w, field) or '') for field in ('reason_watching', 'thesis', 'invalidation_condition', 'catalyst'))]),
+        *([f"- {w.ticker}: Watchlist thesis is not configured." for w in watch if not _has_real_watchlist_thesis(w) and not any(_is_placeholder_text(getattr(w, field) or '') for field in ('reason_watching', 'thesis', 'invalidation_condition', 'catalyst'))]),
         *(["Interpretation: Human-maintained thesis fields remain separate from raw facts."] if style == "debug" else []),
         "",
         "## Items requiring human review",

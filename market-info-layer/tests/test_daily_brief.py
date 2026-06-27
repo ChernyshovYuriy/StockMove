@@ -51,7 +51,7 @@ def test_daily_brief_default_date_excludes_older_events(tmp_path):
 
     text = path.read_text()
     assert "older event" not in text
-    assert "No parsed filing events for this selection" in text
+    assert "No parsed filing events for this event-date selection" in text
 
 
 def test_daily_brief_lookback_days_includes_older_events(tmp_path):
@@ -84,7 +84,7 @@ def test_daily_brief_processed_today_includes_events_created_today(tmp_path):
         )
 
     text = path.read_text()
-    assert "## Recently processed filing events" in text
+    assert "## Events processed in this run" in text
     assert "created today" in text
 
 
@@ -373,7 +373,7 @@ def test_backfill_wording_avoids_top_changes_today_and_shows_dates(tmp_path):
         )
     text = path.read_text()
     assert "Top changes today" not in text
-    assert "Top backfilled events processed during this run" in text
+    assert "Top material events processed in this run" in text
     assert "Processing/report date: 2026-06-26" in text
     assert "Event date basis:" in text
 
@@ -410,3 +410,115 @@ def test_price_predates_warning_is_summarized(tmp_path):
         "Earliest price: 2024-06-27."
     ) in text
     assert text.count("event predates available price history; price context suppressed") == 0
+
+
+def test_processed_report_uses_processing_sections_and_no_dated_today_message(tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'brief.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        session.add(
+            _event(
+                event_date="2019-01-01",
+                created_at="2026-06-26T09:00:00+00:00",
+                summary="processed historical",
+            )
+        )
+        session.commit()
+        path = generate_daily_brief(
+            session, date(2026, 6, 26), tmp_path / "reports", report_mode="processed_at"
+        )
+    text = path.read_text()
+    assert "## Events processed in this run" in text
+    assert "## Top material events processed in this run" in text
+    assert "## Full processed-event appendix" in text
+    assert "dated today" not in text
+    assert "No parsed filing events" not in text
+    assert "processed historical" in text
+
+
+def test_main_report_caps_events_and_writes_full_appendix_file(tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'brief.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        for idx in range(5):
+            session.add(_event(ticker=f"T{idx}", event_date="2024-04-01", summary=f"event {idx}"))
+        session.commit()
+        path = generate_daily_brief(session, date(2024, 4, 1), tmp_path / "reports", max_events=2)
+    text = path.read_text()
+    assert "Main event display limit: 2" in text
+    assert "more material/significant events omitted" in text
+    appendix = path.with_name(f"{path.stem}-events.md")
+    assert appendix.exists()
+    assert "event 4" in appendix.read_text()
+
+
+def test_placeholder_watchlist_does_not_emit_no_thesis_noise(tmp_path):
+    from market_info_layer.db.models import Watchlist
+
+    db_url = f"sqlite:///{tmp_path / 'brief.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        session.add(
+            Watchlist(
+                ticker="AAPL",
+                reason_watching="Example watchlist entry",
+                thesis="Example research thesis",
+                invalidation_condition="Example invalidation condition",
+                catalyst="Example catalyst",
+                updated_at="now",
+            )
+        )
+        session.commit()
+        path = generate_daily_brief(session, date(2024, 4, 1), tmp_path / "reports")
+    text = path.read_text()
+    assert "excluded from implications until configured" in text
+    assert "No watchlist thesis configured for this ticker" not in text
+
+
+def test_dns_download_failures_are_grouped_apart_from_parse_failures(tmp_path):
+    from market_info_layer.db.models import Filing
+
+    db_url = f"sqlite:///{tmp_path / 'brief.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        session.add(
+            Filing(
+                ticker="AAPL",
+                cik="1",
+                form_type="10-K",
+                filing_date="2024-04-01",
+                report_date=None,
+                accession_number="dns",
+                primary_document=None,
+                filing_url="https://sec.gov/dns",
+                source="sec",
+                collected_at="now",
+                processed=True,
+                processing_status="download_failed",
+                processing_error="Temporary failure in name resolution",
+            )
+        )
+        session.add(
+            Filing(
+                ticker="AAPL",
+                cik="1",
+                form_type="4",
+                filing_date="2024-04-01",
+                report_date=None,
+                accession_number="parse",
+                primary_document=None,
+                filing_url="https://sec.gov/parse",
+                source="sec",
+                collected_at="now",
+                processed=True,
+                processing_status="parse_failed",
+                processing_error="downloaded document is not raw Form 4 ownership XML",
+            )
+        )
+        session.commit()
+        path = generate_daily_brief(session, date(2024, 4, 1), tmp_path / "reports")
+    text = path.read_text()
+    assert "## Filing processing failures" in text
+    assert "- dns: 1" in text
+    assert "- parse: 1" in text
+    assert "DNS/name-resolution failures are download-stage failures" in text
