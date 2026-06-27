@@ -392,3 +392,24 @@ def test_export_debug_reports_incomplete_price_counts(tmp_path, monkeypatch):
         "ticker": "AAPL",
         "latest_complete_price_date": "2026-06-24",
     }
+
+
+def test_include_db_sanitization_vacuums_and_reports_freelist(tmp_path, monkeypatch):
+    db_path = tmp_path / "big.db"
+    _set_db(monkeypatch, db_path)
+    _seed(db_path)
+
+    result = runner.invoke(
+        app, ["export-debug", "--output-dir", str(tmp_path / "exports"), "--include-db"]
+    )
+
+    assert result.exit_code == 0, result.output
+    with zipfile.ZipFile(Path(result.output.strip())) as zf:
+        summary = json.loads(zf.read("summary.json"))
+        zf.extract(db_path.name, tmp_path / "unzipped")
+    assert summary["sanitized_db"]["vacuum_ran"] is True
+    assert summary["sanitized_db"]["freelist_pct"] < 10
+    con = sqlite3.connect(tmp_path / "unzipped" / db_path.name)
+    row = con.execute("SELECT raw_text, raw_xml, raw_html FROM filing_documents").fetchone()
+    con.close()
+    assert row == (None, None, None)

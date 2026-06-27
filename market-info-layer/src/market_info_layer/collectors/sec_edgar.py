@@ -15,6 +15,8 @@ from market_info_layer.utils.time import utc_now_iso
 
 FORMS = {"8-K", "10-Q", "10-K", "S-1", "424B", "DEF 14A", "4", "SC 13D", "SC 13G"}
 SEC_SOURCE = "SEC EDGAR submissions"
+SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+_KNOWN_CIKS = {"CEG": "1868275", "LULU": "1397187", "AAPL": "320193", "PLTR": "1321655"}
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +47,45 @@ def read_watchlist(path: Path | None = None) -> list[dict[str, Any]]:
     path = path or ROOT_DIR / "config" / "watchlist.yaml"
     data = yaml.safe_load(path.read_text()) or {}
     return data.get("tickers", [])
+
+
+def fetch_company_tickers(user_agent: str | None = None) -> dict[str, Any]:
+    headers = {"User-Agent": user_agent or get_settings().sec_user_agent}
+    response = requests.get(SEC_COMPANY_TICKERS_URL, headers=headers, timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+def company_ticker_cik_map(company_tickers: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for row in company_tickers.values():
+        ticker = str(row.get("ticker", "")).upper().strip()
+        cik = row.get("cik_str")
+        if ticker and cik is not None:
+            out[ticker] = str(cik).strip()
+    return out
+
+def validate_watchlist_ciks(items: list[dict[str, Any]], company_tickers: dict[str, Any] | None = None) -> list[str]:
+    authoritative = company_ticker_cik_map(company_tickers) if company_tickers is not None else _KNOWN_CIKS
+    errors: list[str] = []
+    for item in items:
+        if item.get("active") is False:
+            continue
+        ticker = str(item.get("ticker", "")).upper().strip()
+        configured = str(item.get("cik", "")).lstrip("0").strip()
+        expected = authoritative.get(ticker)
+        if expected and configured != expected:
+            errors.append(f"{ticker} configured CIK {configured or 'missing'} does not match SEC company-tickers CIK {expected}")
+    return errors
+
+def validate_watchlist_ciks_for_ingestion(items: list[dict[str, Any]]) -> None:
+    try:
+        company_tickers = fetch_company_tickers()
+    except Exception:
+        logger.exception("Unable to fetch SEC company-tickers data; using bundled CIK sanity checks")
+        company_tickers = None
+    errors = validate_watchlist_ciks(items, company_tickers)
+    if errors:
+        raise ValueError("Invalid watchlist CIK mapping(s): " + "; ".join(errors))
 
 
 def fetch_submissions(cik: str, user_agent: str | None = None) -> dict[str, Any]:
@@ -87,7 +128,9 @@ def collect_sec_filings(
 ) -> int:
     inserted = 0
     requested_forms = sorted(FORMS)
-    for item in read_watchlist(watchlist_path):
+    watchlist_items = read_watchlist(watchlist_path)
+    validate_watchlist_ciks_for_ingestion(watchlist_items)
+    for item in watchlist_items:
         ticker = item.get("ticker")
         if item.get("active") is False:
             logger.info("Skipping inactive SEC collection ticker %s", ticker)
