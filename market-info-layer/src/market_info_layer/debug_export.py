@@ -86,7 +86,8 @@ def create_debug_export(
             db_dest = stage / db_path.name
             shutil.copy2(db_path, db_dest)
             if not include_raw_documents:
-                _sanitize_sqlite_raw_columns(db_dest)
+                summary["sanitized_db"] = _sanitize_sqlite_raw_columns(db_dest)
+                _write_json(stage / "summary.json", summary)
         _write_readme(
             stage / "README_DEBUG_EXPORT.md",
             include_db,
@@ -588,7 +589,8 @@ def _health_checks(
     return checks
 
 
-def _sanitize_sqlite_raw_columns(db_copy: Path) -> None:
+def _sanitize_sqlite_raw_columns(db_copy: Path) -> dict[str, Any]:
+    size_before = db_copy.stat().st_size
     conn = sqlite3.connect(db_copy)
     conn.row_factory = sqlite3.Row
     try:
@@ -599,5 +601,11 @@ def _sanitize_sqlite_raw_columns(db_copy: Path) -> None:
                 assignments = ", ".join(f"{_quote_ident(c)} = NULL" for c in raw_cols)
                 conn.execute(f"UPDATE {_quote_ident(table)} SET {assignments}")
         conn.commit()
+        conn.execute("VACUUM")
+        page_count = int(conn.execute("PRAGMA page_count").fetchone()[0])
+        freelist_count = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
     finally:
         conn.close()
+    size_after = db_copy.stat().st_size
+    freelist_pct = (freelist_count / page_count * 100) if page_count else 0.0
+    return {"size_before_bytes": size_before, "size_after_bytes": size_after, "freelist_count": freelist_count, "page_count": page_count, "freelist_pct": freelist_pct, "vacuum_ran": True}

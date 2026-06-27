@@ -354,3 +354,59 @@ def test_price_context_unavailable_does_not_say_needs_human_review(tmp_path):
     text = path.read_text()
     assert "Price context unavailable: event predates available price history." in text
     assert "Price reaction around event; same-period movement; needs human review" not in text
+
+
+def test_backfill_wording_avoids_top_changes_today_and_shows_dates(tmp_path):
+    db_url = f"sqlite:///{tmp_path / 'brief.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        session.add(
+            _event(
+                event_date="2019-01-01",
+                created_at="2026-06-26T09:00:00+00:00",
+                summary="old backfill",
+            )
+        )
+        session.commit()
+        path = generate_daily_brief(
+            session, date(2026, 6, 26), tmp_path / "reports", report_mode="processed_at"
+        )
+    text = path.read_text()
+    assert "Top changes today" not in text
+    assert "Top backfilled events processed during this run" in text
+    assert "Processing/report date: 2026-06-26" in text
+    assert "Event date basis:" in text
+
+
+def test_price_predates_warning_is_summarized(tmp_path):
+    from market_info_layer.db.models import Price
+
+    db_url = f"sqlite:///{tmp_path / 'brief.db'}"
+    init_db(db_url)
+    with Session(get_engine(db_url)) as session:
+        for day in range(1, 4):
+            session.add(_event(event_date=f"2019-01-0{day}", summary=f"old {day}"))
+        session.add(
+            Price(
+                ticker="AAPL",
+                price_date="2024-06-27",
+                open=1,
+                high=1,
+                low=1,
+                close=1,
+                volume=1,
+                is_complete=True,
+                source="test",
+                collected_at="now",
+            )
+        )
+        session.commit()
+        path = generate_daily_brief(
+            session, date(2019, 1, 3), tmp_path / "reports", lookback_days=5
+        )
+    text = path.read_text()
+    assert (
+        "3 filing events predate available price history. Earliest event: 2019-01-01. "
+        "Earliest price: 2024-06-27."
+    ) in text
+    assert text.count("event predates available price history; price context suppressed") == 0

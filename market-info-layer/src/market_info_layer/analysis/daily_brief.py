@@ -292,23 +292,48 @@ def generate_daily_brief(
         report_mode = "processed_at"
     if report_mode == "processed_at":
         selection_text = f"created_at or downloaded_at date={brief_date.isoformat()}"
+    is_backfill_mode = report_mode == "processed_at"
     report_title = (
         "Events Processed During Backfill"
-        if report_mode == "processed_at"
+        if is_backfill_mode
         else "Events by Event Date"
     )
+    top_heading = (
+        "## Top backfilled events processed during this run"
+        if is_backfill_mode
+        else "## Top changes for selected event window"
+    )
+    price_warning_lines = []
+    if outside_price_history_events:
+        by_ticker = {}
+        for e in outside_price_history_events:
+            by_ticker.setdefault(e.ticker, []).append(e.event_date)
+        earliest_event = min(e.event_date for e in outside_price_history_events if e.event_date)
+        earliest_price_all = min(earliest_price.values()) if earliest_price else "unknown"
+        price_warning_lines.append(
+            f"- {len(outside_price_history_events)} filing events predate available price history. "
+            f"Earliest event: {earliest_event}. Earliest price: {earliest_price_all}."
+        )
+        for ticker, dates in sorted(by_ticker.items()):
+            price_warning_lines.append(
+                f"- {ticker}: {len(dates)} events from {min(dates)} to {max(dates)} predate earliest price {earliest_price.get(ticker, 'unknown')}."
+            )
+    else:
+        price_warning_lines.append("- No selected events fall outside available price history.")
     halts_more_count = max(0, len(halts) - max_trading_halts)
     halts = sorted(halts, key=lambda h: h.halt_datetime or "", reverse=True)[:max_trading_halts]
     lines = [
         f"# {report_title}",
         "# Market Information Layer Daily Brief",
         "",
-        f"Date: {brief_date.isoformat()}",
+        f"Processing/report date: {brief_date.isoformat()}",
+        f"Event date basis: {selection_text}",
+        "Filing date shown separately on filing rows when available.",
         f"Report style: {style}",
         f"Report mode: {report_mode}",
         f"Parsed filing event selection: {selection_text}",
         "",
-        "## Top changes today",
+        top_heading,
         *(_format_event(session, e, style, include_low=include_low, debug_price_context=debug_price_context) for e in material_events[:5] if e.importance != "low"),
         *(["- No material watchlist filing events dated today."] if not [e for e in material_events if e.importance != "low"] else []),
         "",
@@ -316,8 +341,7 @@ def generate_daily_brief(
         *(f"- {w.ticker}: status={w.status}, confidence={w.confidence}" for w in watch),
         "",
         "## Data quality warnings",
-        *(f"- {e.ticker} {e.event_date} event predates available price history; price context suppressed in daily brief." for e in outside_price_history_events[:max_events]),
-        *(["- No selected events fall outside available price history."] if not outside_price_history_events else []),
+        *price_warning_lines,
         "",
         "## Human-review queue",
         *(f"- Material filing review: {f.ticker} {f.form_type} filed {f.filing_date} status={f.processing_status or 'unknown'}. Source: {f.filing_url}" for f in review_filings),
@@ -439,10 +463,10 @@ def generate_daily_brief(
         "Human review needed: Review material filings manually.",
         "",
         "## Trading Halts",
-        "Known facts:",
+        "Known facts (watchlist tickers only; debug mode also lists market-wide halt feed):",
         *(
             f"- {h.halt_datetime} {h.ticker} reason_code={h.reason_code} "
-            f"reason_text={h.reason_text} resume={h.resume_datetime}"
+            f"reason_text={h.reason_text or 'Unknown/unverified'} resume={h.resume_datetime}"
             for h in halts
         ),
         *(
@@ -455,7 +479,7 @@ def generate_daily_brief(
             ["", "### All collected trading halts (debug)"]
             + [
                 f"- {h.halt_datetime} {h.ticker} reason_code={h.reason_code} "
-                f"reason_text={h.reason_text} resume={h.resume_datetime}"
+                f"reason_text={h.reason_text or 'Unknown/unverified'} resume={h.resume_datetime}"
                 for h in all_halts
             ]
             if style == "debug"
@@ -465,7 +489,8 @@ def generate_daily_brief(
         "## Watchlist implications",
         "Known facts:",
         *(f"- {w.ticker}: status={w.status}, confidence={w.confidence}" for w in watch),
-        *([f"- {w.ticker}: No watchlist thesis configured for this ticker." for w in watch if not (w.thesis and w.thesis.strip() and not w.thesis.lower().startswith("add "))]),
+        *([f"- {w.ticker}: Watchlist thesis/catalyst fields are placeholders and should not be treated as meaningful." for w in watch if any((getattr(w, field) or '').startswith('Example ') for field in ('reason_watching', 'thesis', 'invalidation_condition', 'catalyst'))]),
+        *([f"- {w.ticker}: No watchlist thesis configured for this ticker." for w in watch if not (w.thesis and w.thesis.strip() and not w.thesis.lower().startswith("add ") and not w.thesis.startswith('Example '))]),
         *(["Interpretation: Human-maintained thesis fields remain separate from raw facts."] if style == "debug" else []),
         "",
         "## Items requiring human review",

@@ -11,9 +11,75 @@ from market_info_layer.analysis.form8k_parser import extract_text
 from market_info_layer.db.models import FilingEvent
 from market_info_layer.utils.time import utc_now_iso
 
-_KEYWORDS = [("risk_factor_update","Risk factor update",r"risk factors?|material risks?","medium"),("revenue_growth_profitability","Revenue/growth/profitability mention",r"revenue|growth|profitab","medium"),("liquidity_capital_resources","Liquidity/capital resources",r"liquidity|capital resources|cash flow","medium"),("going_concern","Going concern",r"going concern","high"),("material_weakness","Material weakness",r"material weakness|internal control","high"),("legal_proceedings","Legal proceedings",r"legal proceedings|litigation|lawsuit","medium"),("guidance_outlook","Guidance/outlook",r"guidance|outlook|forecast","medium")]
+_KEYWORDS = [("liquidity_capital_resources","Liquidity/capital resources",r"liquidity|capital resources|cash flow","medium"),("legal_proceedings","Legal proceedings",r"legal proceedings|litigation|lawsuit","medium"),("guidance_outlook","Guidance/outlook",r"guidance|outlook|forecast","medium")]
 _PROXY = [("annual_meeting","Annual meeting",r"annual meeting|special meeting","medium"),("board_nominees","Board nominees",r"nominees?|election of directors?","medium"),("executive_compensation","Executive compensation",r"executive compensation|compensation discussion","medium"),("say_on_pay","Say-on-pay",r"say[- ]on[- ]pay|advisory vote","medium"),("auditor_ratification","Auditor ratification",r"ratif(?:y|ication).*auditor|independent registered public accounting","low"),("shareholder_proposal","Shareholder proposal",r"shareholder proposal|stockholder proposal","medium")]
 _S1 = [("registration_statement","Registration statement",r"registration statement|form s-1","medium"),("offering_size","Offering size",r"proposed maximum aggregate offering price|offering size|gross proceeds","medium"),("use_of_proceeds","Use of proceeds",r"use of proceeds","medium"),("risk_factor_update","Risk factors",r"risk factors?","medium"),("business_overview","Business summary",r"business overview|our business|company overview","low")]
+
+
+_BOILERPLATE_SECTION_RE = re.compile(r"item\s+1a\.\s*risk factors\s*$|table of contents|signatures?|exhibit index|forward-looking statements?|xbrl", re.I)
+_NEGATION_RE = re.compile(r"no material weaknesses?|no changes in (?:the )?(?:company.s )?internal control|not identified any material weakness|did not identify(?: any)? material weakness|no substantial doubt|does not raise substantial doubt", re.I)
+_THIRD_PARTY_GOING_CONCERN_RE = re.compile(r"(?:customers?|vendors?|suppliers?|partners?|counterparties|tenants|borrowers|third parties|other parties).{0,80}going concern", re.I)
+
+def _clean_analysis_text(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        normalized = re.sub(r"\s+", " ", line).strip()
+        if not normalized or _BOILERPLATE_SECTION_RE.fullmatch(normalized):
+            continue
+        lines.append(normalized)
+    return "\n".join(lines)
+
+def _section_name(context_before: str) -> str | None:
+    matches = list(re.finditer(r"item\s+([0-9]+[a-z]?)\.\s*([^\n]{0,80})", context_before, re.I))
+    if not matches:
+        return None
+    m = matches[-1]
+    return re.sub(r"\s+", " ", m.group(0)).strip()
+
+def _evidence(text: str, match: re.Match[str], rule: str, negation_checked: bool = True) -> str:
+    start = max(0, match.start() - 160)
+    end = min(len(text), match.end() + 220)
+    context = re.sub(r"\s+", " ", text[start:end]).strip()
+    section = _section_name(text[max(0, match.start() - 2000):match.start()]) or "unknown"
+    return (
+        f"matched_phrase={match.group(0)!r}; section={section}; rule={rule}; "
+        f"negation_filter_checked={negation_checked}; context: {context}"
+    )
+
+def _detect_generic_event(text: str, event_type: str) -> tuple[re.Match[str], str] | None:
+    if event_type == "material_weakness":
+        for m in re.finditer(r"material weakness(?:es)?|internal control over financial reporting", text, re.I):
+            window = text[max(0, m.start() - 140): min(len(text), m.end() + 180)]
+            if _NEGATION_RE.search(window):
+                continue
+            if re.search(r"identified (?:a )?material weakness|material weakness (?:exists|existed)|material weaknesses? in internal control", window, re.I):
+                return m, "material_weakness_positive_disclosure"
+    if event_type == "going_concern":
+        for m in re.finditer(r"substantial doubt.{0,120}going concern|going concern", text, re.I):
+            window = text[max(0, m.start() - 180): min(len(text), m.end() + 220)]
+            if _NEGATION_RE.search(window) or _THIRD_PARTY_GOING_CONCERN_RE.search(window):
+                continue
+            if re.search(r"(?:company|registrant|we|our).{0,120}(?:ability to continue as a going concern|going concern)|conditions raise substantial doubt", window, re.I):
+                return m, "going_concern_filer_substantial_doubt"
+    if event_type == "risk_factor_update":
+        for m in re.finditer(r"(?:material changes?.{0,80}risk factors?|risk factors?.{0,80}(?:changed|updated|materially modified)|materially modified.{0,80}risk factors?)", text, re.I):
+            return m, "risk_factor_change_disclosure"
+    if event_type == "revenue_growth_profitability":
+        scrubbed = re.sub(r"emerging growth company", "", text, flags=re.I)
+        m = re.search(r"revenue|profitab|growth (?!company)", scrubbed, re.I)
+        if m:
+            return m, "performance_keyword_non_status"
+    return None
+
+def _structured_rules(form_type: str) -> list[tuple[str, str, str]]:
+    if form_type in {"10-K", "10-Q"}:
+        return [
+            ("material_weakness", "Material weakness", "high"),
+            ("going_concern", "Going concern", "high"),
+            ("risk_factor_update", "Risk factor update", "medium"),
+            ("revenue_growth_profitability", "Revenue/growth/profitability mention", "medium"),
+        ]
+    return []
 
 
 def _snippet(text: str, pattern: str, limit: int = 220) -> str:
@@ -45,9 +111,15 @@ def store_generic_filing_events(session: Session, filing_id: int, ticker: str, f
         if pct: parts.append(f"percent owned {pct.group(1)}%")
         if shares: parts.append(f"shares {shares.group(1)}")
         return _add_event(session, filing_id=filing_id, ticker=ticker, form_type=form_type, event_date=event_date, event_type="beneficial_ownership_disclosure", sec_item=None, headline="Beneficial ownership disclosure", summary="; ".join(parts), importance="medium", source_url=source_url)
+    analysis_text = _clean_analysis_text(text)
+    for event_type, headline, importance in _structured_rules(form_type):
+        detected = _detect_generic_event(analysis_text, event_type)
+        if detected:
+            match, rule = detected
+            inserted += _add_event(session, filing_id=filing_id, ticker=ticker, form_type=form_type, event_date=event_date, event_type=event_type, sec_item=None, headline=headline, summary=f"{headline} detected. Evidence: {_evidence(analysis_text, match, rule)}", importance=importance, source_url=source_url)
     for event_type, headline, pattern, importance in rules:
-        if re.search(pattern, text, re.I):
-            inserted += _add_event(session, filing_id=filing_id, ticker=ticker, form_type=form_type, event_date=event_date, event_type=event_type, sec_item=None, headline=headline, summary=f"{headline} detected. Context: {_snippet(text, pattern)}", importance=importance, source_url=source_url)
+        if re.search(pattern, analysis_text, re.I):
+            inserted += _add_event(session, filing_id=filing_id, ticker=ticker, form_type=form_type, event_date=event_date, event_type=event_type, sec_item=None, headline=headline, summary=f"{headline} detected. Evidence: matched_phrase={pattern!r}; section=unknown; rule=generic_keyword; negation_filter_checked=False; context: {_snippet(analysis_text, pattern)}", importance=importance, source_url=source_url)
     if inserted == 0:
         inserted += _add_event(session, filing_id=filing_id, ticker=ticker, form_type=form_type, event_date=event_date, event_type="parsed_filing", sec_item=None, headline=f"Parsed {form_type}", summary=f"{form_type} processed; no configured high-signal keywords detected.", importance="low", source_url=source_url)
     return inserted

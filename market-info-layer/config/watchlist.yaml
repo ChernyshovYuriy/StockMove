@@ -15,7 +15,7 @@ tickers:
 
   - ticker: CEG
     company_name: Constellation Energy Corporation
-    cik: "1894454"
+    cik: "1868275"
     sector: Utilities
     industry: Utilities - Renewable
     active: true
@@ -43,7 +43,7 @@ tickers:
 
   - ticker: LULU
     company_name: Lululemon Athletica Inc.
-    cik: "1397856"
+    cik: "1397187"
     sector: Consumer Cyclical
     industry: Apparel Retail
     active: true
