@@ -18,6 +18,14 @@ _S1 = [("registration_statement","Registration statement",r"registration stateme
 
 _BOILERPLATE_SECTION_RE = re.compile(r"item\s+1a\.\s*risk factors\s*$|table of contents|signatures?|exhibit index|forward-looking statements?|xbrl", re.I)
 _NEGATION_RE = re.compile(r"no material weaknesses?|no changes in (?:the )?(?:company.s )?internal control|not identified any material weakness|did not identify(?: any)? material weakness|no substantial doubt|does not raise substantial doubt", re.I)
+_MATERIAL_WEAKNESS_NEGATIVE_RE = re.compile(
+    r"assessing the risk that a material weakness exists|reasonable assurance|maintained effective internal control|effective internal control over financial reporting|in all material respects|no material weaknesses?|did not identify(?: any)? material weakness|no change in internal control|no changes in (?:the )?(?:company.s )?internal control|unqualified opinion",
+    re.I,
+)
+_MATERIAL_WEAKNESS_POSITIVE_RE = re.compile(
+    r"identified (?:a )?material weakness|disclosed (?:a )?material weakness|material weakness(?:es)? (?:exists|existed|were identified|was identified)|internal control over financial reporting was not effective|management concluded.{0,80}internal control.{0,40}ineffective|remediation of material weakness",
+    re.I,
+)
 _THIRD_PARTY_GOING_CONCERN_RE = re.compile(r"(?:customers?|vendors?|suppliers?|partners?|counterparties|tenants|borrowers|third parties|other parties).{0,80}going concern", re.I)
 
 def _clean_analysis_text(text: str) -> str:
@@ -49,11 +57,12 @@ def _evidence(text: str, match: re.Match[str], rule: str, negation_checked: bool
 def _detect_generic_event(text: str, event_type: str) -> tuple[re.Match[str], str] | None:
     if event_type == "material_weakness":
         for m in re.finditer(r"material weakness(?:es)?|internal control over financial reporting", text, re.I):
-            window = text[max(0, m.start() - 140): min(len(text), m.end() + 180)]
-            if _NEGATION_RE.search(window):
+            window = text[max(0, m.start() - 180): min(len(text), m.end() + 240)]
+            if _MATERIAL_WEAKNESS_NEGATIVE_RE.search(window) or _NEGATION_RE.search(window):
                 continue
-            if re.search(r"identified (?:a )?material weakness|material weakness (?:exists|existed)|material weaknesses? in internal control", window, re.I):
-                return m, "material_weakness_positive_disclosure"
+            positive = _MATERIAL_WEAKNESS_POSITIVE_RE.search(window)
+            if positive:
+                return positive, "material_weakness_positive_disclosure"
     if event_type == "going_concern":
         for m in re.finditer(r"substantial doubt.{0,120}going concern|going concern", text, re.I):
             window = text[max(0, m.start() - 180): min(len(text), m.end() + 220)]
