@@ -215,3 +215,7 @@ Daily Markdown reports now distinguish event-date selection from processing/back
 Price context is only attached when the event date has a nearby baseline trading price. The default maximum baseline gap is five calendar days, so older SEC events are not paired with the first available price row years later. Reports state when price context is unavailable or incomplete instead of labeling those cases as human-review flags.
 
 Debug exports include expanded `health_checks.json` issues for watchlist SEC coverage, price coverage, latest filing/price/halt rows, unknown Form 4 transaction codes, placeholder watchlist thesis fields, and filing events that predate available price history. Each issue includes a severity such as `OK`, `WARN`, or `ERROR` where applicable.
+
+## Debug export CSV note
+
+Debug export CSV files are written with standards-compliant quoting. Some text fields can contain embedded newlines, so naive line-count tools such as `wc -l` may not match the number of exported data rows. Use a CSV-aware reader when validating row counts.

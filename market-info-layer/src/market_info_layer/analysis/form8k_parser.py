@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from market_info_layer.analysis.event_hash import deterministic_event_hash
 from market_info_layer.db.models import FilingEvent
 from market_info_layer.utils.time import utc_now_iso
 
@@ -269,6 +270,9 @@ def store_8k_events(
 ) -> int:
     items = parse_8k_items(raw_text)
     if not items:
+        event_hash = deterministic_event_hash(filing_id=filing_id, event_date=event_date, event_type="Unknown filing event", sec_item=None, headline="Unparseable 8-K filing", summary="No recognized 8-K item headings were detected.")
+        if session.scalar(select(FilingEvent.id).where(FilingEvent.event_hash == event_hash)):
+            return 0
         session.add(
             FilingEvent(
                 filing_id=filing_id,
@@ -282,13 +286,15 @@ def store_8k_events(
                 importance="unknown",
                 source_url=source_url,
                 needs_human_review=True,
+                event_hash=event_hash,
                 created_at=utc_now_iso(),
             )
         )
         return 1
+    inserted = 0
     for item in items:
-        exists = session.scalar(select(FilingEvent.id).where(FilingEvent.filing_id == filing_id, FilingEvent.sec_item == item["sec_item"], FilingEvent.event_type == item["event_type"], FilingEvent.summary == item["summary"]))
-        if exists:
+        event_hash = deterministic_event_hash(filing_id=filing_id, event_date=event_date, **item)
+        if session.scalar(select(FilingEvent.id).where(FilingEvent.event_hash == event_hash)):
             continue
         session.add(
             FilingEvent(
@@ -303,7 +309,9 @@ def store_8k_events(
                 importance=item["importance"],
                 source_url=source_url,
                 needs_human_review=False,
+                event_hash=event_hash,
                 created_at=utc_now_iso(),
             )
         )
-    return len(items)
+        inserted += 1
+    return inserted

@@ -139,13 +139,19 @@ def sec_routine(
     create_db()
     with session() as s:
         inserted = collect_sec_filings(s)
-        processed_8k = process_sec_filings(s, limit=limit_per_form, form_type="8-K")
-        processed_form4 = process_sec_filings(s, limit=limit_per_form, form_type="4")
+        processed_by_form = {
+            form: process_sec_filings(s, limit=limit_per_form, form_type=form)
+            for form in ("8-K", "4", "10-K", "10-Q", "DEF 14A", "S-1", "SC 13G")
+        }
+    processed_summary = ", ".join(
+        f"{form}={count}" for form, count in processed_by_form.items()
+    )
     typer.echo(
         "SEC routine complete: "
         f"inserted {inserted} filing metadata rows; "
-        f"processed {processed_8k} 8-K filings; "
-        f"processed {processed_form4} Form 4 filings"
+        f"processed {processed_by_form['8-K']} 8-K filings; "
+        f"processed {processed_by_form['4']} Form 4 filings; "
+        f"processed filings by form: {processed_summary}"
     )
 
 
