@@ -113,10 +113,11 @@ def _user_tables(conn: sqlite3.Connection) -> list[str]:
 def _schema_sql(conn: sqlite3.Connection) -> str:
     rows = conn.execute(
         "SELECT sql FROM sqlite_master "
-        "WHERE type='table' AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL "
-        "ORDER BY name"
+        "WHERE type IN ('table','index','trigger','view') AND name NOT LIKE 'sqlite_%' "
+        "AND sql IS NOT NULL "
+        "ORDER BY type, name"
     ).fetchall()
-    return "\n\n".join(row["sql"] + ";" for row in rows) + "\n"
+    return "\n\n".join(row["sql"].rstrip(";") + ";" for row in rows) + "\n"
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
@@ -247,7 +248,7 @@ Intentionally excluded:
   Included as separate CSV/raw fields here: {include_raw}.
 - Full SQLite database included: {include_db}. Raw document columns in the copied DB are sanitized: {include_db and not include_raw}.
 
-Inspect CSVs with a spreadsheet, Python, or command-line tools. Inspect `schema.sql`
+Inspect CSVs with a spreadsheet, Python, or command-line tools. CSV fields may contain quoted embedded newlines, so naive line counts (for example `wc -l`) can be misleading. Inspect `schema.sql`
 with any text editor or SQLite client.
 
 Reproduce with:
@@ -314,6 +315,11 @@ def _health_checks(
             checks["counts"][f"{table}_by_{col}"] = _group_count(conn, table, col)
     if _has(tables, columns, "filings", "processed"):
         checks["counts"]["filings_processed"] = _group_count(conn, "filings", "processed")
+    if _has(tables, columns, "filings", "processing_status"):
+        checks["counts"]["filings_by_processing_status"] = _group_count(conn, "filings", "processing_status")
+        null_status = _scalar(conn, "SELECT COUNT(*) FROM filings WHERE processing_status IS NULL OR processing_status = ''")
+        if null_status:
+            checks["issues"].append({"severity": "ERROR", "code": "filings_null_processing_status", "count": null_status})
     if _has(tables, columns, "filing_documents", "content_type"):
         checks["counts"]["filing_documents_by_content_type"] = _group_count(
             conn, "filing_documents", "content_type"
@@ -351,6 +357,12 @@ def _health_checks(
                 "GROUP BY filing_id HAVING COUNT(*) > 1"
             )
         ]
+    if _has(tables, columns, "filing_events", "event_hash"):
+        null_hashes = _scalar(conn, "SELECT COUNT(*) FROM filing_events WHERE event_hash IS NULL OR event_hash = ''")
+        checks["missing"]["filing_events_missing_event_hash"] = null_hashes
+        if null_hashes:
+            checks["issues"].append({"severity": "ERROR", "code": "filing_events_null_event_hash", "count": null_hashes})
+        checks["duplicates"]["filing_events_by_event_hash"] = [dict(r) for r in conn.execute("SELECT event_hash, COUNT(*) AS count FROM filing_events WHERE event_hash IS NOT NULL GROUP BY event_hash HAVING COUNT(*) > 1")]
     if _has(tables, columns, "filing_events", "filing_id", "sec_item", "event_type"):
         checks["duplicates"]["filing_events_by_filing_item_type"] = [
             dict(r)
@@ -474,13 +486,15 @@ def _health_checks(
                 filing_count = _scalar(
                     conn, "SELECT COUNT(*) FROM filings WHERE ticker = ?", (ticker,)
                 )
+                cik = conn.execute("SELECT cik FROM tickers WHERE ticker = ?", (ticker,)).fetchone()["cik"] if "tickers" in tables and _has(tables, columns, "tickers", "ticker", "cik") else None
                 if filing_count == 0:
                     checks["issues"].append(
                         {
-                            "severity": "WARN",
-                            "code": "watchlist_zero_sec_filings",
+                            "severity": "ERROR" if cik else "WARN",
+                            "code": "active_watchlist_cik_zero_sec_filings" if cik else "watchlist_zero_sec_filings",
                             "ticker": ticker,
-                            "message": f"{ticker} has zero SEC filings",
+                            "cik": cik,
+                            "message": f"{ticker} has zero SEC filings" + (" despite configured CIK" if cik else ""),
                         }
                     )
                 latest = conn.execute(

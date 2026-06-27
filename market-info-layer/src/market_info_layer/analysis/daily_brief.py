@@ -263,12 +263,15 @@ def generate_daily_brief(
     events_created_today_count = sum(1 for e in session.scalars(select(FilingEvent)).all() if _iso_date(e.created_at) == brief_date)
     insider_created_today_count = sum(1 for i in session.scalars(select(InsiderTransaction)).all() if _iso_date(i.collected_at) == brief_date)
     insider_importance = ["high", "medium", "low"] if include_low else ["high", "medium"]
-    insiders = session.scalars(
+    insider_stmt = (
         select(InsiderTransaction)
         .where(InsiderTransaction.importance.in_(insider_importance))
         .order_by(InsiderTransaction.transaction_date.desc(), InsiderTransaction.id.desc())
         .limit(max_insider_transactions + 1)
-    ).all()
+    )
+    if report_mode == "event_date":
+        insider_stmt = insider_stmt.where(InsiderTransaction.transaction_date == brief_date.isoformat())
+    insiders = session.scalars(insider_stmt).all()
     insider_more_count = max(0, len(insiders) - max_insider_transactions)
     insiders = insiders[:max_insider_transactions]
     review_filings = session.scalars(
@@ -305,7 +308,22 @@ def generate_daily_brief(
         f"Report mode: {report_mode}",
         f"Parsed filing event selection: {selection_text}",
         "",
-        "## Summary",
+        "## Top changes today",
+        *(_format_event(session, e, style, include_low=include_low, debug_price_context=debug_price_context) for e in material_events[:5] if e.importance != "low"),
+        *(["- No material watchlist filing events dated today."] if not [e for e in material_events if e.importance != "low"] else []),
+        "",
+        "## Watchlist impact",
+        *(f"- {w.ticker}: status={w.status}, confidence={w.confidence}" for w in watch),
+        "",
+        "## Data quality warnings",
+        *(f"- {e.ticker} {e.event_date} event predates available price history; price context suppressed in daily brief." for e in outside_price_history_events[:max_events]),
+        *(["- No selected events fall outside available price history."] if not outside_price_history_events else []),
+        "",
+        "## Human-review queue",
+        *(f"- Material filing review: {f.ticker} {f.form_type} filed {f.filing_date} status={f.processing_status or 'unknown'}. Source: {f.filing_url}" for f in review_filings),
+        *(["- No material filings currently require review."] if not review_filings else []),
+        "",
+        "## Backfill/process summary",
         f"- Filing documents downloaded on report date: {downloaded_today_count}",
         f"- Filing events created on report date: {events_created_today_count}",
         f"- Parsed filing events selected: {len(selected_events)}",
@@ -317,7 +335,6 @@ def generate_daily_brief(
         f"- Events outside price-history window: {len(outside_price_history_events)}",
         "- Price-context analysis is limited to events on or after the earliest available price date for each ticker.",
         "",
-        "## Known facts",
         "## Macro Context",
         *(_format_macro_latest(m) for m in macros),
         *(["Interpretation: Not generated in version 1.", "Speculation: None."] if style == "debug" else []),

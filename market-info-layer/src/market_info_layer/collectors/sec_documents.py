@@ -10,6 +10,7 @@ from requests import RequestException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from market_info_layer.analysis.event_hash import deterministic_event_hash
 from market_info_layer.analysis.form4_parser import Form4ParseError, store_form4_transactions
 from market_info_layer.analysis.form8k_parser import store_8k_events
 from market_info_layer.analysis.sec_filing_parser import store_generic_filing_events
@@ -315,6 +316,9 @@ def is_xml_document(url: str, content: str) -> bool:
 def _record_unparseable_form4(
     session: Session, filing: Filing, source_url: str, reason: str
 ) -> None:
+    event_hash = deterministic_event_hash(filing_id=filing.id, event_date=filing.filing_date, event_type="Unparseable Form 4", sec_item=None, headline="Unparseable Form 4", summary=f"Form 4 could not be parsed: {reason}")
+    if session.scalar(select(FilingEvent.id).where(FilingEvent.event_hash == event_hash)):
+        return
     session.add(
         FilingEvent(
             filing_id=filing.id,
@@ -328,6 +332,7 @@ def _record_unparseable_form4(
             importance="unknown",
             source_url=source_url,
             needs_human_review=True,
+            event_hash=event_hash,
             created_at=utc_now_iso(),
         )
     )
@@ -350,25 +355,25 @@ def process_sec_filings(
     for filing in filings:
         if filing.form_type not in SUPPORTED_PROCESSING_FORMS:
             filing.processed = True
-            filing.processing_status = "unsupported_type"
+            filing.processing_status = "skipped_unsupported_form"
             session.commit()
             processed += 1
             continue
-        existing = session.scalar(
-            select(FilingDocument.id).where(FilingDocument.filing_id == filing.id)
+        existing_doc = session.scalar(
+            select(FilingDocument).where(FilingDocument.filing_id == filing.id)
         )
-        if existing:
+        if existing_doc:
             continue
-        try:
-            download = _coerce_download(download_filing_document(filing.filing_url), filing.filing_url)
-        except RequestException:
-            if filing.form_type in {"10-K", "10-Q", "DEF 14A", "S-1", "SC 13G"}:
+        else:
+            try:
+                download = _coerce_download(download_filing_document(filing.filing_url), filing.filing_url)
+            except RequestException as exc:
                 filing.processed = True
-                filing.processing_status = "unsupported_type"
+                filing.processing_status = "download_failed"
+                filing.processing_error = str(exc)
                 session.commit()
                 processed += 1
                 continue
-            raise
         content = download.text
         text = extract_text(content)
         xml = (
@@ -380,8 +385,10 @@ def process_sec_filings(
             if is_xml_document(download.final_url, content)
             else None
         )
-        session.add(
-            FilingDocument(
+        if not existing_doc:
+            filing.processing_status = "downloaded"
+            session.add(
+                FilingDocument(
                 filing_id=filing.id,
                 ticker=filing.ticker,
                 form_type=filing.form_type,
@@ -391,9 +398,9 @@ def process_sec_filings(
                 raw_html=content if _looks_like_html(content, download.content_type) else None,
                 downloaded_at=utc_now_iso(),
                 http_status_code=download.status_code,
-                content_type=download.content_type,
+                    content_type=download.content_type,
+                )
             )
-        )
         if filing.form_type == "4":
             try:
                 if download.status_code < 200 or download.status_code >= 300:
@@ -404,7 +411,7 @@ def process_sec_filings(
                 filing.processing_status = "parsed"
             except Form4ParseError as exc:
                 _record_unparseable_form4(session, filing, download.final_url, str(exc))
-                filing.processing_status = "parser_failed"
+                filing.processing_status = "parse_failed"
         elif filing.form_type == "8-K":
             store_8k_events(
                 session,
@@ -417,8 +424,8 @@ def process_sec_filings(
             )
             filing.processing_status = "parsed"
         elif filing.form_type in {"10-K", "10-Q", "DEF 14A", "S-1", "SC 13G"}:
-            store_generic_filing_events(session, filing.id, filing.ticker, filing.form_type, text, download.final_url, filing.filing_date)
-            filing.processing_status = "parsed"
+            created = store_generic_filing_events(session, filing.id, filing.ticker, filing.form_type, text, download.final_url, filing.filing_date)
+            filing.processing_status = "parsed" if created else "needs_human_review"
         filing.processed = True
         processed += 1
         session.commit()

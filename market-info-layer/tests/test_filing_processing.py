@@ -498,18 +498,27 @@ def test_form4_duplicate_prevention(monkeypatch, tmp_path):
         assert session.query(InsiderTransaction).count() == 1
 
 
-def test_unsupported_material_filing_marked_explicitly(tmp_path):
+def test_material_filing_is_downloaded_classified_and_marked_parsed(monkeypatch, tmp_path):
     with _session(tmp_path) as session:
         filing = _filing("10-Q", "0010")
         session.add(filing)
         session.commit()
+        monkeypatch.setattr(
+            sec_documents,
+            "download_filing_document",
+            lambda url: sec_documents.DownloadedFilingDocument(
+                "Risk Factors. Revenue growth and cash flow discussion.", url, "text/plain", 200
+            ),
+        )
 
         assert process_sec_filings(session, limit=10, form_type="10-Q") == 1
 
         refreshed = session.get(Filing, filing.id)
         assert refreshed.processed is True
-        assert refreshed.processing_status == "unsupported_type"
-        assert session.query(FilingDocument).count() == 0
+        assert refreshed.processing_status == "parsed"
+        assert session.query(FilingDocument).count() == 1
+        assert session.query(FilingEvent).count() >= 1
+        assert session.query(FilingEvent).filter(FilingEvent.event_hash.is_(None)).count() == 0
 
 
 def test_processed_today_report_does_not_duplicate_filing_event(tmp_path):
@@ -550,3 +559,48 @@ def test_form4_common_transaction_codes_are_mapped():
         rows = parse_form4_xml(_form4_with_code(code))
         assert not rows[0].transaction_type.startswith("Unknown")
         assert CODE_DETAILS[code]
+
+
+def test_event_hash_is_deterministic_and_normalized():
+    from market_info_layer.analysis.event_hash import deterministic_event_hash
+
+    first = deterministic_event_hash(
+        filing_id=10,
+        sec_item="Item 2.02",
+        event_type="Guidance Update",
+        event_date="2026-06-20",
+        headline="  Revenue   Growth  ",
+        summary="Cash flow\n improved",
+    )
+    second = deterministic_event_hash(
+        filing_id="10",
+        sec_item=" item 2.02 ",
+        event_type="guidance update",
+        event_date="2026-06-20",
+        headline="Revenue Growth",
+        summary="Cash flow improved",
+    )
+    assert first == second
+
+
+def test_8k_event_upsert_is_idempotent(tmp_path):
+    from market_info_layer.analysis.form8k_parser import store_8k_events
+
+    with _session(tmp_path) as session:
+        raw = "Item 2.02 Results of Operations and Financial Condition. Guidance improved."
+        assert (
+            store_8k_events(
+                session, 123, "ABC", "8-K", raw, "https://sec.test/8k", "2026-06-20"
+            )
+            == 1
+        )
+        session.commit()
+        assert (
+            store_8k_events(
+                session, 123, "ABC", "8-K", raw, "https://sec.test/8k", "2026-06-20"
+            )
+            == 0
+        )
+        session.commit()
+        assert session.query(FilingEvent).count() == 1
+        assert session.query(FilingEvent).filter(FilingEvent.event_hash.is_(None)).count() == 0

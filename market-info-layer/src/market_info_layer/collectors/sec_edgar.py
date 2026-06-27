@@ -108,6 +108,7 @@ def collect_sec_filings(
                 if exists:
                     skipped += 1
                     continue
+                row.setdefault("processing_status", "discovered")
                 session.add(Filing(**row))
                 inserted += 1
                 inserted_for_ticker += 1

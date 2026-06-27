@@ -27,6 +27,7 @@ def init_db(database_url: str | None = None) -> None:
     _ensure_filing_processing_status(engine)
     _ensure_insider_transaction_columns(engine)
     _ensure_filing_event_columns(engine)
+    _backfill_filing_event_hashes(engine)
     _ensure_common_indexes(engine)
 
 
@@ -74,16 +75,18 @@ def _ensure_filing_processing_status(engine) -> None:
     if "filings" not in inspector.get_table_names():
         return
     existing = {column["name"] for column in inspector.get_columns("filings")}
-    if "processing_status" not in existing:
-        with engine.begin() as conn:
+    with engine.begin() as conn:
+        if "processing_status" not in existing:
             conn.execute(text("ALTER TABLE filings ADD COLUMN processing_status TEXT"))
-            conn.execute(
-                text(
-                    "UPDATE filings SET processing_status = "
-                    "CASE WHEN processed = 1 THEN 'processed' ELSE 'pending' END "
-                    "WHERE processing_status IS NULL"
-                )
+        if "processing_error" not in existing:
+            conn.execute(text("ALTER TABLE filings ADD COLUMN processing_error TEXT"))
+        conn.execute(
+            text(
+                "UPDATE filings SET processing_status = "
+                "CASE WHEN processed = 1 THEN 'parsed' ELSE 'discovered' END "
+                "WHERE processing_status IS NULL OR processing_status IN ('pending', 'processed', '')"
             )
+        )
 
 
 def _ensure_common_indexes(engine) -> None:
@@ -170,3 +173,23 @@ def _ensure_filing_event_columns(engine) -> None:
             conn.execute(text("ALTER TABLE filing_events ADD COLUMN event_hash TEXT"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_filing_events_event_hash ON filing_events(event_hash) WHERE event_hash IS NOT NULL"))
         conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_insider_transaction_hash ON insider_transactions(transaction_hash) WHERE transaction_hash IS NOT NULL"))
+
+
+def _backfill_filing_event_hashes(engine) -> None:
+    inspector = inspect(engine)
+    if "filing_events" not in inspector.get_table_names():
+        return
+    from market_info_layer.analysis.event_hash import deterministic_event_hash
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT id, filing_id, sec_item, event_type, event_date, headline, summary FROM filing_events WHERE event_hash IS NULL OR event_hash = ''")).mappings().all()
+        for row in rows:
+            event_hash = deterministic_event_hash(
+                filing_id=row["filing_id"],
+                sec_item=row["sec_item"],
+                event_type=row["event_type"],
+                event_date=row["event_date"],
+                headline=row["headline"],
+                summary=row["summary"],
+            )
+            conn.execute(text("UPDATE filing_events SET event_hash = :event_hash WHERE id = :id"), {"event_hash": event_hash, "id": row["id"]})

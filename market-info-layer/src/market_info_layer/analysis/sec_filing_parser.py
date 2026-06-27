@@ -6,6 +6,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from market_info_layer.analysis.event_hash import deterministic_event_hash
 from market_info_layer.analysis.form8k_parser import extract_text
 from market_info_layer.db.models import FilingEvent
 from market_info_layer.utils.time import utc_now_iso
@@ -23,7 +24,8 @@ def _snippet(text: str, pattern: str, limit: int = 220) -> str:
 
 
 def _add_event(session: Session, **kwargs) -> int:
-    existing = session.scalar(select(FilingEvent.id).where(FilingEvent.filing_id == kwargs["filing_id"], FilingEvent.sec_item == kwargs.get("sec_item"), FilingEvent.event_type == kwargs["event_type"], FilingEvent.summary == kwargs["summary"]))
+    kwargs.setdefault("event_hash", deterministic_event_hash(**kwargs))
+    existing = session.scalar(select(FilingEvent.id).where(FilingEvent.event_hash == kwargs["event_hash"]))
     if existing:
         return 0
     session.add(FilingEvent(created_at=utc_now_iso(), needs_human_review=False, **kwargs))

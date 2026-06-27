@@ -45,7 +45,8 @@ class Filing(Base):
     source: Mapped[str] = mapped_column(String)
     collected_at: Mapped[str] = mapped_column(String)
     processed: Mapped[bool] = mapped_column(Boolean, default=False)
-    processing_status: Mapped[str | None] = mapped_column(String)
+    processing_status: Mapped[str | None] = mapped_column(String, default="discovered")
+    processing_error: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (
         Index("ix_filings_ticker_filing_date", "ticker", "filing_date"),
         Index("ix_filings_accession_number", "accession_number"),
